@@ -56,7 +56,10 @@ router.get('/war-room', requireModule('warroom'), async (req, res) => {
             _id: { wardNo: "$wardNo", partNo: "$partNo" },
             total: { $sum: 1 },
             voted: { $sum: { $cond: ["$voted", 1, 0] } },
-            core: { $sum: { $cond: [{ $eq: ["$supportStatus", "core"] }, 1, 0] } }
+            core: { $sum: { $cond: [{ $eq: ["$supportStatus", "core"] }, 1, 0] } },
+            swing: { $sum: { $cond: [{ $eq: ["$supportStatus", "swing"] }, 1, 0] } },
+            opposition: { $sum: { $cond: [{ $eq: ["$supportStatus", "opposition"] }, 1, 0] } },
+            unmarked: { $sum: { $cond: [{ $in: ["$supportStatus", ["core", "swing", "opposition"]] }, 0, 1] } }
         }},
         { $project: {
             wardNo: "$_id.wardNo",
@@ -64,6 +67,9 @@ router.get('/war-room', requireModule('warroom'), async (req, res) => {
             total: 1,
             voted: 1,
             core: 1,
+            swing: 1,
+            opposition: 1,
+            unmarked: 1,
             _id: 0
         }},
         { $sort: { wardNo: 1, partNo: 1 } }
@@ -72,15 +78,23 @@ router.get('/war-room', requireModule('warroom'), async (req, res) => {
 
     const metrics = { total: 0, voted: 0, core: 0, swing: 0, opposition: 0, unmarked: 0 };
     supportResult.forEach((row) => {
-      const status = row._id || 'unknown';
-      if (['core', 'swing', 'opposition', 'unmarked'].includes(status)) {
-        metrics[status] += row.count;
-      }
-      metrics.total += row.count;
+     const status = ['core', 'swing', 'opposition', 'unmarked'].includes(row._id) ? row._id : 'unmarked';
+     metrics[status] += row.count;
+     metrics.total += row.count;
     });
     metrics.voted = boothsResult.reduce((sum, row) => sum + row.voted, 0);
 
-    res.json({ metrics, booths: boothsResult });
+    const support = ['core', 'swing', 'opposition', 'unmarked'].map((status) => ({
+     status,
+     count: metrics[status],
+    }));
+    const booths = boothsResult.map((booth) => ({
+     ...booth,
+     ward: booth.wardNo || '',
+     part: booth.partNo || '',
+    }));
+
+    res.json({ metrics, support, booths });
   } catch (err) {
     console.error('War room analytics failed:', err.message);
     res.status(500).json({ message: 'War room data could not be loaded.' });

@@ -16,7 +16,7 @@ const userRoutes = require('./routes/users');
 const featureRoutes = require('./routes/features');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5002;
 
 // Rate Limiting (Token Bucket / Throttling)
 const rateLimit = require('express-rate-limit');

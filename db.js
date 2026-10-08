@@ -52,19 +52,19 @@ module.exports = {
     try {
       const uri = process.env.MONGO_URI;
       if (!uri) {
-        console.error('❌ MONGO_URI is missing in .env');
-        process.exit(1);
+        throw new Error('MONGO_URI is missing in .env');
       }
-      
+
       await mongoose.connect(uri, {
         maxPoolSize: 20,
         serverSelectionTimeoutMS: 15000,
       });
       console.log('✅ MongoDB Connected Successfully!');
-      
+
       await ensureSchema();
     } catch (err) {
       console.error('❌ MongoDB Connection Error:', err.message);
+      throw err;
     }
   }
 };

@@ -364,6 +364,7 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     const result = await Voter.bulkWrite(uniqueBatch.map((voter) => ({
       updateOne: {
         filter: { organizationId, epic: voter.epic },
+        collation: { locale: 'en', strength: 2 },
         update: {
           $set: voter,
           $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
