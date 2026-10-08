@@ -58,23 +58,65 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     // Extract Voter IDs (EPIC Numbers) using Regex
     const text = data.text;
     const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2}\/\d{2}\/\d{3}\/\d{6}/gi;
-    const matches = text.match(epicRegex) || [];
-    const uniqueEpics = [...new Set(matches)];
+    
+    let match;
+    const allEpics = [];
+    while ((match = epicRegex.exec(text)) !== null) {
+      allEpics.push({ epic: match[0].toUpperCase(), index: match.index });
+    }
+    
+    const epics = [];
+    const seen = new Set();
+    for (const e of allEpics) {
+      if (!seen.has(e.epic)) {
+        seen.add(e.epic);
+        epics.push(e);
+      }
+    }
 
-    // Save extracted Voter IDs
-    const operations = uniqueEpics.map((epic, index) => {
+    // Extract common metadata (part no, ward no) if available
+    const partMatch = text.match(/(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
+    const wardMatch = text.match(/(?:वार्ड|Ward)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
+    const defaultPartNo = partMatch ? partMatch[1] : "1";
+    const defaultWardNo = wardMatch ? wardMatch[1] : "1";
+
+    const operations = epics.map((current, i) => {
+      // Voter block is typically the text before the EPIC, up to the previous EPIC
+      const startIndex = i === 0 ? 0 : epics[i-1].index + epics[i-1].epic.length;
+      const block = text.substring(startIndex, current.index);
+      
+      const nameMatch = block.match(/(?:निर्वाचक का नाम|नाम|Name)\s*[:\-]?\s*([^\n\r]+)/i);
+      const fatherMatch = block.match(/(?:पिता|पति|माता|अन्य)\s*का\s*नाम\s*[:\-]?\s*([^\n\r]+)/i);
+      const relationTypeMatch = block.match(/(पिता|पति|माता|अन्य)/);
+      const houseMatch = block.match(/(?:मकान\s*संख्या|House\s*No)\s*[:\-]?\s*([^\n\r]+)/i);
+      const ageMatch = block.match(/(?:आयु|Age)\s*[:\-]?\s*(\d+)/i);
+      const genderMatch = block.match(/(?:लिंग|Gender)\s*[:\-]?\s*(पुरुष|महिला|स्त्री|अन्य|Male|Female)/i);
+      
+      let genderVal = "";
+      if (genderMatch) {
+        const g = genderMatch[1].trim().toLowerCase();
+        genderVal = (g === 'male' || g === 'पुरुष') ? 'पुरुष' : (g === 'female' || g === 'महिला' || g === 'स्त्री') ? 'स्त्री' : 'अन्य';
+      }
+
       return {
         updateOne: {
-          filter: { epic: epic.toUpperCase() },
+          filter: { epic: current.epic, organizationId: organizationId },
           update: {
+            $set: {
+              nameHi: nameMatch ? nameMatch[1].trim() : "PDF Extracted",
+              relativeNameHi: fatherMatch ? fatherMatch[1].trim() : "",
+              relationType: relationTypeMatch ? relationTypeMatch[1].trim() : "",
+              houseNo: houseMatch ? houseMatch[1].trim() : "",
+              age: ageMatch ? parseInt(ageMatch[1], 10) : null,
+              gender: genderVal
+            },
             $setOnInsert: {
               _id: `voter_${crypto.randomUUID()}`,
-              epic: epic.toUpperCase(),
-              wardNo: "1",
-              partNo: "1",
-              serialNo: index + 1,
-              nameEn: "PDF Extracted",
-              nameHi: "PDF Extracted",
+              epic: current.epic,
+              wardNo: defaultWardNo,
+              partNo: defaultPartNo,
+              serialNo: i + 1,
+              nameEn: nameMatch ? nameMatch[1].trim() : "PDF Extracted",
               organizationId: organizationId
             }
           },
@@ -84,10 +126,10 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     });
 
     if (operations.length > 0) {
-      await Voter.bulkWrite(operations);
+      await Voter.bulkWrite(operations, { ordered: false });
     }
 
-    res.json({ message: 'Upload successful', extractedCount: uniqueEpics.length, epics: uniqueEpics });
+    res.json({ message: 'Upload successful', extractedCount: epics.length });
   } catch (error) {
     console.error('PDF processing error:', error);
     res.status(500).json({ error: 'Internal Server Error' });

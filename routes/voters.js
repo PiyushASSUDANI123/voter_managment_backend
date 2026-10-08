@@ -135,12 +135,28 @@ router.put('/:id', verifyToken, (req, res, next) => {
       supportStatus: 'supportStatus',
       notes: 'notes',
       migrantLocation: 'migrantLocation',
+      nameEn: 'nameEn',
+      nameHi: 'nameHi',
+      relativeNameEn: 'relativeNameEn',
+      relativeNameHi: 'relativeNameHi',
+      relationType: 'relationType',
+      age: 'age',
+      gender: 'gender',
+      epic: 'epic',
+      houseNo: 'houseNo',
+      wardNo: 'wardNo',
+      partNo: 'partNo',
+      serialNo: 'serialNo',
     };
     
     const updates = {};
     for (const [key, dbColumn] of Object.entries(columns)) {
       if (Object.hasOwn(req.body, key)) {
-        updates[dbColumn] = req.body[key];
+        if (key === 'age' || key === 'serialNo') {
+          updates[dbColumn] = req.body[key] ? Number(req.body[key]) : null;
+        } else {
+          updates[dbColumn] = req.body[key];
+        }
       }
     }
     
