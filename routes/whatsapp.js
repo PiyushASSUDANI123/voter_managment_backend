@@ -1,9 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const db = require('../db');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
+const { Voter, SlipDispatch } = require('../models/index');
 
 router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res) => {
   let dispatchId = null;
@@ -17,26 +17,33 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
     if (!token || !phoneNumberId || !graphApiVersion) {
       return res.status(503).json({ message: 'WhatsApp sending is unavailable until Meta API credentials are configured.' });
     }
-    const numericVoterId = Number.parseInt(voterId, 10);
-    if (!Number.isInteger(numericVoterId) || numericVoterId <= 0 || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
+    
+    if (!voterId || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
       return res.status(400).json({ message: 'A valid voter ID and phone number are required.' });
     }
 
-    const accessParams = [];
-    const access = addVoterAccess(req, accessParams);
-    accessParams.push(numericVoterId);
-    const result = await db.query(`SELECT * FROM voters WHERE ${access} AND id = $${accessParams.length}`, accessParams);
-    if (result.rows.length === 0) {
+    const query = addVoterAccess(req);
+    // Support string ID or sqlId
+    if (!isNaN(voterId)) {
+      query.sqlId = Number.parseInt(voterId, 10);
+    } else {
+      query._id = voterId;
+    }
+
+    const dbVoter = await Voter.findOne(query).lean();
+    if (!dbVoter) {
       return res.status(404).json({ message: 'Voter not found' });
     }
 
-    const dbVoter = result.rows[0];
-    const dispatch = await db.query(`
-      INSERT INTO slip_dispatches (voter_id, voter_epic, voter_name, recipient_phone, status, organization_id)
-      VALUES ($1, $2, $3, $4, 'sending', $5)
-      RETURNING id
-    `, [dbVoter.id, dbVoter.epic, dbVoter.name_hi || dbVoter.name_en || '', phoneNumber.trim(), req.user.organizationId || 'org_default']);
-    dispatchId = dispatch.rows[0].id;
+    const dispatch = await SlipDispatch.create({
+      voterId: dbVoter._id,
+      voterEpic: dbVoter.epic,
+      voterName: dbVoter.nameHi || dbVoter.nameEn || '',
+      recipientPhone: phoneNumber.trim(),
+      status: 'sending',
+      organizationId: req.user.organizationId || 'org_default'
+    });
+    dispatchId = dispatch._id;
 
     const messageText = `ग्राम पंचायत जेलातरा चुनाव 2026 — आपकी डिजिटल मतदाता सूचना पर्ची संलग्न है।
 
@@ -44,58 +51,79 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 
 📜 *मतदाता सूचना पर्ची · ग्राम पंचायत जेलातरा (जालोर)*
 
-📌 *वार्ड संख्या (Ward):* ${(dbVoter.ward_no || '').replace('वार्ड ', '')} | *भाग संख्या (Part):* ${(dbVoter.part_no || '').replace('भाग ', '')}
-📌 *क्रम संख्या (Serial No):* ${dbVoter.serial_no}
-👤 *नाम:* ${dbVoter.name_en || ''} / ${dbVoter.name_hi || ''}
-👨‍👩‍👧 *${dbVoter.relation_type || 'परिजन'}:* ${dbVoter.relative_name_en || ''} / ${dbVoter.relative_name_hi || ''}
-🏠 *मकान नं.:* ${dbVoter.house_no || ''} | 📅 *आयु:* ${dbVoter.age || ''} वर्ष, ${dbVoter.gender || ''}
+📌 *वार्ड संख्या (Ward):* ${(dbVoter.wardNo || '').replace('वार्ड ', '')} | *भाग संख्या (Part):* ${(dbVoter.partNo || '').replace('भाग ', '')}
+📌 *क्रम संख्या (Serial No):* ${dbVoter.serialNo}
+👤 *नाम:* ${dbVoter.nameEn || ''} / ${dbVoter.nameHi || ''}
+👨‍👩‍👧 *${dbVoter.relationType || 'परिजन'}:* ${dbVoter.relativeNameEn || ''} / ${dbVoter.relativeNameHi || ''}
+🏠 *मकान नं.:* ${dbVoter.houseNo || ''} | 📅 *आयु:* ${dbVoter.age || ''} वर्ष, ${dbVoter.gender || ''}
 🆔 *पहचान पत्र (EPIC):* ${dbVoter.epic || ''}
 
 🏫 *मतदान केंद्र:*
-${(dbVoter.part_no || '').replace('भाग ', '')} - राजकीय उच्च माध्यमिक विद्यालय, जैलातरा`;
+${(dbVoter.partNo || '').replace('भाग ', '')} - राजकीय उच्च माध्यमिक विद्यालय, जैलातरा`;
 
     const response = await axios.post(
       `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
       {
         messaging_product: 'whatsapp',
-        to: phoneNumber.replace(/\D/g, ''),
+        recipient_type: 'individual',
+        to: phoneNumber.replace(/[^\d]/g, ''),
         type: 'text',
-        text: { body: messageText },
+        text: { preview_url: false, body: messageText },
       },
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    metaAccepted = true;
-    const messageId = response.data.messages?.[0]?.id || null;
-    await db.query(
-      "UPDATE slip_dispatches SET status = 'sent', provider_message_id = $1 WHERE id = $2",
-      [messageId, dispatchId]
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      }
     );
 
-    res.json({
-      success: true,
-      message: 'WhatsApp message sent.',
-      messageId,
-    });
+    metaAccepted = true;
+    
+    await SlipDispatch.updateOne(
+      { _id: dispatchId }, 
+      { $set: { status: 'sent', providerMessageId: response.data?.messages?.[0]?.id } }
+    );
+    
+    res.json({ success: true, message: 'Message queued for delivery successfully.', dispatchId });
   } catch (err) {
-    console.error('WhatsApp message failed:', err.message);
-    if (dispatchId && !metaAccepted) {
-      try {
-        await db.query(
-          "UPDATE slip_dispatches SET status = 'failed', error_message = $1 WHERE id = $2",
-          [err.response?.data?.error?.message || err.message, dispatchId]
-        );
-      } catch (auditErr) {
-        console.error('Failed to record WhatsApp dispatch failure:', auditErr.message);
-      }
+    if (dispatchId) {
+      const errorMessage = err.response ? JSON.stringify(err.response.data) : err.message;
+      await SlipDispatch.updateOne(
+        { _id: dispatchId },
+        { $set: { status: 'failed', errorMessage } }
+      ).catch(() => {});
     }
-    if (metaAccepted) {
-      return res.status(500).json({
-        message: 'Meta accepted the message, but the dispatch record could not be updated. Check history before retrying.',
-      });
-    }
-    res.status(502).json({
-      message: 'Meta WhatsApp could not send the message. Check the integration configuration and try again.',
+    console.error('WhatsApp send failed:', err.response?.data || err.message);
+    res.status(metaAccepted ? 207 : 500).json({
+      message: metaAccepted
+        ? 'Message sent, but an error occurred saving the dispatch record.'
+        : 'Failed to send WhatsApp message via Meta Graph API.',
     });
+  }
+});
+
+router.get('/history', verifyToken, requireModule('voters'), async (req, res) => {
+  try {
+    const query = {};
+    if (req.user.role !== 'admin') {
+      query.organizationId = req.user.organizationId || 'org_default';
+    }
+    
+    const dispatches = await SlipDispatch.find(query).sort({ createdAt: -1 }).limit(100).lean();
+    
+    res.json(dispatches.map(d => ({
+      id: d._id,
+      voterId: d.voterId,
+      epic: d.voterEpic,
+      voterName: d.voterName,
+      recipient: d.recipientPhone,
+      status: d.status,
+      timestamp: d.createdAt,
+    })));
+  } catch (err) {
+    console.error('Dispatch history failed:', err.message);
+    res.status(500).json({ message: 'History could not be loaded.' });
   }
 });
 

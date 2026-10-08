@@ -1,33 +1,34 @@
 const express = require('express');
-const db = require('../db');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
+const { Voter, Organization } = require('../models/index');
 
 const router = express.Router();
 
 const formatVoter = (row) => ({
-  _id: row.id,
+  _id: row._id,
+  sqlId: row.sqlId,
   epic: row.epic,
-  nameEn: row.name_en,
-  nameHi: row.name_hi,
-  relativeNameEn: row.relative_name_en,
-  relativeNameHi: row.relative_name_hi,
-  relationType: row.relation_type,
+  nameEn: row.nameEn,
+  nameHi: row.nameHi,
+  relativeNameEn: row.relativeNameEn,
+  relativeNameHi: row.relativeNameHi,
+  relationType: row.relationType,
   age: row.age,
   gender: row.gender,
-  houseNo: row.house_no,
-  wardNo: row.ward_no,
-  partNo: row.part_no,
-  serialNo: row.serial_no,
-  phone: row.phone,
+  houseNo: row.houseNo,
+  wardNo: row.wardNo,
+  partNo: row.partNo,
+  serialNo: row.serialNo,
+  phone: row.mobileNo,
   caste: row.caste,
   surety: row.surety,
-  supportStatus: row.support_status,
-  isMigrant: row.is_migrant,
-  migrantLocation: row.migrant_location,
-  assignedWorker: row.assigned_worker,
-  familyId: row.family_id,
+  supportStatus: row.supportStatus,
+  isMigrant: row.isMigrant,
+  migrantLocation: row.migrantLocation,
+  assignedWorker: row.assignedWorker,
+  familyId: row.familyId,
   voted: row.voted,
 });
 
@@ -40,354 +41,271 @@ router.use(verifyToken);
 
 router.get('/war-room', requireModule('warroom'), async (req, res) => {
   try {
-    const [support, booths] = await Promise.all([
-      (() => {
-        const params = [];
-        const access = addVoterAccess(req, params, 'v.');
-        return db.query(`
-        SELECT support_status, COUNT(*)::integer AS count
-        FROM voters v
-        WHERE ${access}
-        GROUP BY support_status
-      `, params);
-      })(),
-      (() => {
-        const params = [];
-        const access = addVoterAccess(req, params, 'v.');
-        return db.query(`
-        SELECT ward_no, part_no, COUNT(*)::integer AS total,
-          COUNT(*) FILTER (WHERE voted)::integer AS voted,
-          COUNT(*) FILTER (WHERE support_status = 'core')::integer AS core,
-          COUNT(*) FILTER (WHERE support_status = 'swing')::integer AS swing,
-          COUNT(*) FILTER (WHERE support_status = 'opposition')::integer AS opposition,
-          COUNT(*) FILTER (WHERE support_status = 'unmarked')::integer AS unmarked
-        FROM voters v
-        WHERE ${access}
-        GROUP BY ward_no, part_no
-        ORDER BY ward_no, part_no
-      `, params);
-      })(),
+    const match = addVoterAccess(req);
+
+    const [supportResult, boothsResult] = await Promise.all([
+      Voter.aggregate([
+        { $match: match },
+        { $group: { _id: "$supportStatus", count: { $sum: 1 } } }
+      ]),
+      Voter.aggregate([
+        { $match: match },
+        { $group: {
+            _id: { wardNo: "$wardNo", partNo: "$partNo" },
+            total: { $sum: 1 },
+            voted: { $sum: { $cond: ["$voted", 1, 0] } },
+            core: { $sum: { $cond: [{ $eq: ["$supportStatus", "core"] }, 1, 0] } }
+        }},
+        { $project: {
+            wardNo: "$_id.wardNo",
+            partNo: "$_id.partNo",
+            total: 1,
+            voted: 1,
+            core: 1,
+            _id: 0
+        }},
+        { $sort: { wardNo: 1, partNo: 1 } }
+      ])
     ]);
 
-    res.json({
-      support: support.rows.map((row) => ({ status: row.support_status, count: row.count })),
-      booths: booths.rows.map((row) => ({
-        ward: row.ward_no,
-        part: row.part_no,
-        total: row.total,
-        voted: row.voted,
-        core: row.core,
-        swing: row.swing,
-        opposition: row.opposition,
-        unmarked: row.unmarked,
-      })),
+    const metrics = { total: 0, voted: 0, core: 0, swing: 0, opposition: 0, unmarked: 0 };
+    supportResult.forEach((row) => {
+      const status = row._id || 'unknown';
+      if (['core', 'swing', 'opposition', 'unmarked'].includes(status)) {
+        metrics[status] += row.count;
+      }
+      metrics.total += row.count;
     });
+    metrics.voted = boothsResult.reduce((sum, row) => sum + row.voted, 0);
+
+    res.json({ metrics, booths: boothsResult });
   } catch (err) {
-    console.error('War-room summary failed:', err.message);
-    res.status(500).json({ message: 'War-room summary could not be loaded.' });
+    console.error('War room analytics failed:', err.message);
+    res.status(500).json({ message: 'War room data could not be loaded.' });
   }
 });
 
-router.get('/communities', requireModule('community'), async (req, res) => {
-  const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
-  if (!query) return res.status(400).json({ message: 'Enter a community or surname to search.' });
-  const terms = query.split(',').map((term) => term.trim()).filter(Boolean);
-  if (query.length > 500 || terms.length === 0 || terms.length > 12) {
-    return res.status(400).json({ message: 'Search up to 12 community names at a time.' });
-  }
-  const includeFamily = req.query.includeFamily !== 'false';
-
+router.get('/dashboard', async (req, res) => {
   try {
-    const params = [];
-    const access = addVoterAccess(req, params, 'v.');
-    const searchTerms = terms.map((term) => {
-      params.push(`%${term}%`);
-      return `$${params.length}`;
-    });
-    const matchExpression = searchTerms.map((placeholder) => `(
-      ${['caste', 'name_en', 'name_hi', 'relative_name_en', 'relative_name_hi']
-        .map((field) => `COALESCE(v.${field}, '') ILIKE ${placeholder}`)
-        .join(' OR ')}
-    )`).join(' OR ');
-    params.push(includeFamily);
-    const includeFamilyParam = params.length;
-    params.push(ward ? `%${ward}%` : '');
-    const wardParam = params.length;
-    params.push(boundedNumber(req.query.limit, 100, 250));
-    const limitParam = params.length;
-    const result = await db.query(`
-      WITH matched AS (
-        SELECT v.id, v.family_id
-        FROM voters v
-        WHERE ${access}
-          AND (${matchExpression})
-          AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
-      )
-      SELECT v.*,
-        COUNT(*) OVER (PARTITION BY v.ward_no, v.part_no, v.house_no)::integer AS household_count,
-        CASE WHEN EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
-          THEN 'direct' ELSE 'family' END AS match_type
-      FROM voters v
-      WHERE ${access}
-        AND (
-          EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
-          OR (
-            $${includeFamilyParam} = true
-            AND v.family_id IS NOT NULL
-            AND EXISTS (SELECT 1 FROM matched m WHERE m.family_id = v.family_id)
-          )
-        )
-      ORDER BY v.ward_no, v.part_no, v.serial_no
-      LIMIT $${limitParam}
-    `, params);
+    const match = addVoterAccess(req);
+    const org = await Organization.findById(req.user.organizationId).lean();
+    const enabledModules = org?.enabledModules || [];
 
-    res.json(result.rows.map((row) => ({
-      ...formatVoter(row),
-      householdCount: row.household_count,
-      matchType: row.match_type,
-    })));
+    const stats = {};
+    const moduleQueries = [];
+
+    if (enabledModules.includes('poll-desk')) {
+      moduleQueries.push(
+        Voter.aggregate([
+          { $match: match },
+          { $group: {
+              _id: null,
+              total: { $sum: 1 },
+              voted: { $sum: { $cond: ["$voted", 1, 0] } }
+          }}
+        ]).then(result => {
+          stats.votedCount = result[0]?.voted || 0;
+          stats.totalVoters = result[0]?.total || 0;
+        })
+      );
+    }
+    if (enabledModules.includes('warroom')) {
+      moduleQueries.push(
+        Voter.aggregate([
+          { $match: match },
+          { $group: { _id: "$supportStatus", count: { $sum: 1 } } }
+        ]).then(result => {
+          stats.support = { core: 0, swing: 0, opposition: 0, unmarked: 0 };
+          result.forEach(row => {
+            if (['core', 'swing', 'opposition', 'unmarked'].includes(row._id)) {
+              stats.support[row._id] += row.count;
+            }
+          });
+        })
+      );
+    }
+    if (enabledModules.includes('migrants')) {
+      moduleQueries.push(
+        Voter.countDocuments({ ...match, isMigrant: true }).then(count => {
+          stats.migrantCount = count;
+        })
+      );
+    }
+
+    await Promise.all(moduleQueries);
+    res.json(stats);
+  } catch (err) {
+    console.error('Dashboard data failed:', err.message);
+    res.status(500).json({ message: 'Dashboard data could not be loaded.' });
+  }
+});
+
+router.get('/migrants', requireModule('migrants'), async (req, res) => {
+  try {
+    const page = boundedNumber(req.query.page, 1, 1000);
+    const pageSize = boundedNumber(req.query.pageSize, 100, 250);
+    
+    const query = addVoterAccess(req);
+    query.isMigrant = true;
+
+    if (typeof req.query.ward === 'string' && req.query.ward.trim()) {
+      query.wardNo = new RegExp(req.query.ward.trim(), 'i');
+    }
+    if (typeof req.query.search === 'string' && req.query.search.trim()) {
+      const searchRegex = new RegExp(req.query.search.trim(), 'i');
+      query.$or = [
+        { nameHi: searchRegex },
+        { nameEn: searchRegex },
+        { epic: searchRegex },
+      ];
+    }
+
+    const count = await Voter.countDocuments(query);
+    const voters = await Voter.find(query)
+      .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean();
+
+    res.json(req.query.page || req.query.pageSize
+      ? { data: voters.map(formatVoter), page, pageSize, total: count }
+      : voters.map(formatVoter));
+  } catch (err) {
+    console.error('Migrant search failed:', err.message);
+    res.status(500).json({ message: 'Migrant records could not be loaded.' });
+  }
+});
+
+router.get('/community', requireModule('community'), async (req, res) => {
+  try {
+    const searchString = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const terms = searchString.split(',').map((term) => term.trim()).filter(Boolean);
+    if (!searchString || searchString.length > 500 || terms.length === 0 || terms.length > 12) {
+      return res.status(400).json({ message: 'Enter up to 12 community names to search.' });
+    }
+    const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
+    const includeFamily = req.query.includeFamily !== 'false';
+
+    const matchQuery = addVoterAccess(req);
+    if (ward) {
+      matchQuery.wardNo = new RegExp(ward, 'i');
+    }
+    
+    const termsRegex = terms.map(t => new RegExp(t, 'i'));
+    const orConditions = [];
+    termsRegex.forEach(regex => {
+      orConditions.push({ caste: regex });
+      orConditions.push({ nameEn: regex });
+      orConditions.push({ nameHi: regex });
+      orConditions.push({ relativeNameEn: regex });
+      orConditions.push({ relativeNameHi: regex });
+    });
+    
+    matchQuery.$or = orConditions;
+
+    // First find matched voters
+    const matchedVoters = await Voter.find(matchQuery).lean();
+    
+    let finalVoters = matchedVoters;
+    if (includeFamily) {
+      const familyIds = [...new Set(matchedVoters.map(v => v.familyId).filter(Boolean))];
+      if (familyIds.length > 0) {
+        const accessQuery = addVoterAccess(req);
+        accessQuery.familyId = { $in: familyIds };
+        const familyVoters = await Voter.find(accessQuery).lean();
+        
+        // Merge without duplicates
+        const voterMap = new Map();
+        familyVoters.forEach(v => voterMap.set(v._id.toString(), v));
+        matchedVoters.forEach(v => voterMap.set(v._id.toString(), v));
+        finalVoters = Array.from(voterMap.values());
+      }
+    }
+    
+    // Sort
+    finalVoters.sort((a, b) => {
+      if (a.wardNo !== b.wardNo) return (a.wardNo || '').localeCompare(b.wardNo || '');
+      if (a.partNo !== b.partNo) return (a.partNo || '').localeCompare(b.partNo || '');
+      return (a.serialNo || 0) - (b.serialNo || 0);
+    });
+
+    const page = boundedNumber(req.query.page, 1, 1000);
+    const pageSize = boundedNumber(req.query.pageSize, 100, 250);
+    
+    const paginated = finalVoters.slice((page - 1) * pageSize, page * pageSize);
+
+    res.json(req.query.page || req.query.pageSize
+      ? { data: paginated.map(formatVoter), page, pageSize, total: finalVoters.length }
+      : finalVoters.map(formatVoter));
   } catch (err) {
     console.error('Community search failed:', err.message);
     res.status(500).json({ message: 'Community search could not be completed.' });
   }
 });
 
-router.get('/migrants', requireModule('migrants'), async (req, res) => {
-  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-  const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
-
-  try {
-    const params = [];
-    const access = addVoterAccess(req, params, 'v.');
-    params.push(ward ? `%${ward}%` : '');
-    const wardParam = params.length;
-    params.push(search ? `%${search}%` : '');
-    const searchParam = params.length;
-    params.push(boundedNumber(req.query.limit, 250, 500));
-    const limitParam = params.length;
-    const result = await db.query(`
-      SELECT v.*,
-        COUNT(*) OVER (PARTITION BY v.ward_no, v.part_no, v.house_no)::integer AS household_count
-      FROM voters v
-      WHERE ${access} AND v.is_migrant = true
-        AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
-        AND ($${searchParam} = '' OR COALESCE(v.name_en, '') ILIKE $${searchParam}
-          OR COALESCE(v.name_hi, '') ILIKE $${searchParam}
-          OR COALESCE(v.epic, '') ILIKE $${searchParam}
-          OR COALESCE(v.phone, '') ILIKE $${searchParam}
-          OR COALESCE(v.migrant_location, '') ILIKE $${searchParam})
-      ORDER BY v.ward_no, v.part_no, v.serial_no
-      LIMIT $${limitParam}
-    `, params);
-
-    res.json(result.rows.map((row) => ({ ...formatVoter(row), householdCount: row.household_count })));
-  } catch (err) {
-    console.error('Migrant voter list failed:', err.message);
-    res.status(500).json({ message: 'Migrant voter list could not be loaded.' });
-  }
-});
-
-router.get('/dispatches', requireModule('history'), async (req, res) => {
-  const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-  const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
-  const limit = boundedNumber(req.query.limit, 100, 500);
-
-  try {
-    const params = [];
-    const dispatchAccess = addVoterAccess(req, params, 'd.');
-    const voterAccess = addVoterAccess(req, params, 'v.');
-    const predicates = [dispatchAccess, voterAccess];
-    if (search) {
-      params.push(`%${search}%`);
-      predicates.push(`(d.voter_name ILIKE $${params.length} OR d.voter_epic ILIKE $${params.length} OR d.recipient_phone ILIKE $${params.length})`);
-    }
-    if (['sent', 'failed', 'sending'].includes(status)) {
-      params.push(status);
-      predicates.push(`d.status = $${params.length}`);
-    }
-    const where = `WHERE ${predicates.join(' AND ')}`;
-    const summary = await db.query(`
-      SELECT COUNT(d.id)::integer AS total,
-        COUNT(d.id) FILTER (WHERE d.status = 'sent')::integer AS sent,
-        COUNT(d.id) FILTER (WHERE d.status = 'failed')::integer AS failed,
-        COUNT(d.id) FILTER (WHERE d.status = 'sending')::integer AS sending
-      FROM slip_dispatches d
-      LEFT JOIN voters v ON v.id = d.voter_id
-      ${where}
-    `, params);
-    params.push(limit);
-    const result = await db.query(`
-      SELECT d.id, d.voter_id, d.voter_epic, d.voter_name, d.recipient_phone, d.slip_type,
-        d.status, d.provider_message_id, d.error_message, d.created_at
-      FROM slip_dispatches d
-      LEFT JOIN voters v ON v.id = d.voter_id
-      ${where}
-      ORDER BY d.created_at DESC
-      LIMIT $${params.length}
-    `, params);
-
-    res.json({
-      summary: summary.rows[0],
-      dispatches: result.rows.map((row) => ({
-        id: row.id,
-        voterId: row.voter_id,
-        epic: row.voter_epic,
-        voterName: row.voter_name,
-        phone: row.recipient_phone,
-        slipType: row.slip_type,
-        status: row.status,
-        providerMessageId: row.provider_message_id,
-        errorMessage: row.error_message,
-        createdAt: row.created_at,
-      })),
-    });
-  } catch (err) {
-    console.error('Dispatch history failed:', err.message);
-    res.status(500).json({ message: 'Dispatch history could not be loaded.' });
-  }
-});
-
 router.get('/export.xlsx', async (req, res) => {
-  const dataset = typeof req.query.dataset === 'string' ? req.query.dataset : '';
-  const permissions = {
-    voters: 'voters',
-    turnout: 'turnout',
-    migrants: 'migrants',
-    community: 'community',
-    dispatches: 'history',
-    workers: 'workers',
-    accounts: 'accounts',
-    warroom: 'warroom',
-  };
-  const permission = permissions[dataset];
-  if (!permission) return res.status(400).json({ message: 'Choose a supported Excel export dataset.' });
-  if (req.user?.role !== 'admin'
-    && (!req.user?.modules?.includes(permission)
-      || (dataset === 'accounts' && req.user?.role !== 'tenant_admin'))) {
-    return res.status(403).json({ message: 'Your account does not have access to export this dataset.' });
-  }
-
   try {
-    const params = [];
-    const voterAccess = addVoterAccess(req, params, 'v.');
-    let result;
+    const query = addVoterAccess(req);
+    
+    const dataset = req.query.dataset;
+    if (!['voters', 'turnout', 'migrants', 'community'].includes(dataset)) {
+      return res.status(400).json({ message: 'Invalid dataset requested.' });
+    }
+
+    if (dataset === 'migrants') {
+      query.isMigrant = true;
+    }
+
     if (dataset === 'community') {
-      const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-      const terms = query.split(',').map((term) => term.trim()).filter(Boolean);
-      if (!query || query.length > 500 || terms.length === 0 || terms.length > 12) {
+      const searchString = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const terms = searchString.split(',').map((term) => term.trim()).filter(Boolean);
+      if (!searchString || searchString.length > 500 || terms.length === 0 || terms.length > 12) {
         return res.status(400).json({ message: 'Enter up to 12 community names to export.' });
       }
-      const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
-      const includeFamily = req.query.includeFamily !== 'false';
-      const searchTerms = terms.map((term) => {
-        params.push(`%${term}%`);
-        return `$${params.length}`;
+      
+      const termsRegex = terms.map(t => new RegExp(t, 'i'));
+      const orConditions = [];
+      termsRegex.forEach(regex => {
+        orConditions.push({ caste: regex }, { nameEn: regex }, { nameHi: regex }, { relativeNameEn: regex }, { relativeNameHi: regex });
       });
-      const matchExpression = searchTerms.map((placeholder) => `(
-        ${['caste', 'name_en', 'name_hi', 'relative_name_en', 'relative_name_hi']
-          .map((field) => `COALESCE(v.${field}, '') ILIKE ${placeholder}`)
-          .join(' OR ')}
-      )`).join(' OR ');
-      params.push(includeFamily);
-      const includeFamilyParam = params.length;
-      params.push(ward ? `%${ward}%` : '');
-      const wardParam = params.length;
-      result = await db.query(`
-        WITH matched AS (
-          SELECT v.id, v.family_id
-          FROM voters v
-          WHERE ${voterAccess}
-            AND (${matchExpression})
-            AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
-        )
-        SELECT v.* FROM voters v
-        WHERE ${voterAccess}
-          AND (
-            EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
-            OR (
-              $${includeFamilyParam} = true
-              AND v.family_id IS NOT NULL
-              AND EXISTS (SELECT 1 FROM matched m WHERE m.family_id = v.family_id)
-            )
-          )
-        ORDER BY v.ward_no, v.part_no, v.serial_no
-      `, params);
-    } else if (['voters', 'turnout', 'migrants'].includes(dataset)) {
-      const predicates = [voterAccess];
-      const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-      const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
-      if (dataset === 'turnout') predicates.push('v.voted = false');
-      if (dataset === 'migrants') predicates.push('v.is_migrant = true');
-      if (search) {
-        params.push(`%${search}%`);
-        const searchParam = `$${params.length}`;
-        predicates.push(`(COALESCE(v.name_en, '') ILIKE ${searchParam} OR COALESCE(v.name_hi, '') ILIKE ${searchParam}
-          OR COALESCE(v.epic, '') ILIKE ${searchParam} OR COALESCE(v.phone, '') ILIKE ${searchParam}
-          OR COALESCE(v.migrant_location, '') ILIKE ${searchParam})`);
-      }
-      if (ward) {
-        params.push(ward);
-        predicates.push(`v.ward_no = $${params.length}`);
-      }
-      result = await db.query(`
-        SELECT v.* FROM voters v WHERE ${predicates.join(' AND ')}
-        ORDER BY v.ward_no, v.part_no, v.serial_no
-      `, params);
-    } else if (dataset === 'dispatches') {
-      const dispatchAccess = addVoterAccess(req, params, 'd.');
-      const predicates = [dispatchAccess, voterAccess];
-      const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
-      const status = typeof req.query.status === 'string' ? req.query.status.trim() : '';
-      if (search) {
-        params.push(`%${search}%`);
-        predicates.push(`(d.voter_name ILIKE $${params.length} OR d.voter_epic ILIKE $${params.length} OR d.recipient_phone ILIKE $${params.length})`);
-      }
-      if (['sent', 'failed', 'sending'].includes(status)) {
-        params.push(status);
-        predicates.push(`d.status = $${params.length}`);
-      }
-      result = await db.query(`
-        SELECT d.id, d.voter_id, d.voter_name, d.voter_epic, d.recipient_phone, d.slip_type,
-          d.status, d.provider_message_id, d.error_message, d.created_at, d.organization_id
-        FROM slip_dispatches d LEFT JOIN voters v ON v.id = d.voter_id
-        WHERE ${predicates.join(' AND ')}
-        ORDER BY d.created_at DESC
-      `, params);
-    } else if (dataset === 'warroom') {
-      result = await db.query(`
-        SELECT v.ward_no, v.part_no, COUNT(*)::integer AS total,
-          COUNT(*) FILTER (WHERE v.voted)::integer AS voted,
-          COUNT(*) FILTER (WHERE v.support_status = 'core')::integer AS core,
-          COUNT(*) FILTER (WHERE v.support_status = 'swing')::integer AS swing,
-          COUNT(*) FILTER (WHERE v.support_status = 'opposition')::integer AS opposition,
-          COUNT(*) FILTER (WHERE v.support_status = 'unmarked')::integer AS unmarked
-        FROM voters v WHERE ${voterAccess}
-        GROUP BY v.ward_no, v.part_no ORDER BY v.ward_no, v.part_no
-      `, params);
+      query.$or = orConditions;
     } else {
-      const userParams = [];
-      const organizationFilter = req.user?.role === 'admin' && typeof req.query.organizationId === 'string'
-        ? (userParams.push(req.query.organizationId), `organization_id = $${userParams.length}`)
-        : (userParams.push(req.user?.organizationId || 'org_default'), `organization_id = $${userParams.length}`);
-      const roleFilter = dataset === 'workers' ? " AND role = 'worker'" : " AND role IN ('worker', 'tenant_admin')";
-      result = await db.query(`
-        SELECT id, email, full_name, phone, role, sub_role, scope_type, scope_value,
-          modules, is_active, organization_id, created_at
-        FROM users WHERE ${organizationFilter}${roleFilter} ORDER BY organization_id, created_at
-      `, userParams);
+      const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
+      if (search) {
+        const regex = new RegExp(search, 'i');
+        query.$or = [{ nameHi: regex }, { nameEn: regex }, { epic: regex }, { relativeNameHi: regex }, { relativeNameEn: regex }];
+      }
     }
+    
+    const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
+    if (ward) query.wardNo = new RegExp(ward, 'i');
+
+    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+
     const workbook = createWorkbook();
-    const tabNames = {
-      voters: 'Voters', turnout: 'Pending voters', migrants: 'Migrant voters',
-      community: 'Community search', dispatches: 'Dispatch history',
-      workers: 'Workers', accounts: 'Accounts', warroom: 'Booth summary',
-    };
-    addSheet(workbook, tabNames[dataset], result.rows);
-    await sendWorkbook(res, workbook, `${dataset}.xlsx`);
+    addSheet(workbook, 'Export', voters.map((v) => ({
+      'EPIC No': v.epic,
+      'Ward': v.wardNo,
+      'Part': v.partNo,
+      'Serial No': v.serialNo,
+      'Name (English)': v.nameEn,
+      'Name (Hindi)': v.nameHi,
+      'Age': v.age,
+      'Gender': v.gender,
+      'Relation': v.relationType,
+      'Relative Name (English)': v.relativeNameEn,
+      'Relative Name (Hindi)': v.relativeNameHi,
+      'House No': v.houseNo,
+      'Mobile': v.mobileNo,
+      'Caste': v.caste,
+      'Status': v.supportStatus,
+      'Voted': v.voted ? 'Yes' : 'No'
+    })));
+    
+    await sendWorkbook(res, workbook, `Export_${dataset}`);
   } catch (err) {
-    console.error('Excel export failed:', err.message);
-    res.status(500).json({ message: 'Excel export could not be created.' });
+    console.error('Export failed:', err.message);
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 });
 

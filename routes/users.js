@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const db = require('../db');
+const { User, Organization, Voter } = require('../models/index');
 const { verifyToken, isOrganizationAdmin, requireModule } = require('../middleware/authMiddleware');
 
 const router = express.Router();
@@ -11,46 +11,53 @@ const orgFor = (req) => req.user.organizationId || 'org_default';
 const isPlatformAdmin = (req) => req.user.role === 'admin';
 
 const selectAccounts = async (req, workersOnly) => {
-  const params = [req.user.id];
-  const filters = ['u.id <> $1'];
+  const query = {};
+  
   if (!isPlatformAdmin(req)) {
-    params.push(orgFor(req));
-    filters.push(`u.organization_id = $${params.length}`);
+    query.organizationId = orgFor(req);
   } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
-    params.push(req.query.organizationId.trim());
-    filters.push(`u.organization_id = $${params.length}`);
+    query.organizationId = req.query.organizationId.trim();
   }
-  if (workersOnly) filters.push("u.role = 'worker'");
+  
+  if (workersOnly) {
+    query.role = 'worker';
+  } else {
+    // Only fetch non-admin users for tenant viewing
+    query._id = { $ne: req.user.id };
+  }
 
-  const result = await db.query(`
-    SELECT u.id, u.email, u.full_name, u.phone, u.role AS account_type, u.sub_role, u.scope_type,
-      u.scope_value, u.modules, u.is_active, u.organization_id, u.created_at,
-      o.name AS organization_name,
-      COUNT(v.id)::integer AS assigned_voters
-    FROM users u
-    LEFT JOIN organizations o ON o.id = u.organization_id
-    LEFT JOIN voters v ON v.assigned_worker = COALESCE(u.full_name, u.email)
-      AND v.organization_id = u.organization_id
-    WHERE ${filters.join(' AND ')}
-    GROUP BY u.id, o.name
-    ORDER BY u.created_at DESC
-  `, params);
-  return result.rows.map((row) => ({
-    id: row.id,
-    email: row.email,
-    name: row.full_name || '',
-    phone: row.phone || '',
-    accountType: row.account_type,
-    role: row.sub_role || 'Operator',
-    scope: row.scope_type,
-    scopeValue: row.scope_value || '',
-    modules: row.modules || [],
-    isActive: row.is_active,
-    assignedVoters: row.assigned_voters,
-    organizationId: row.organization_id,
-    organizationName: row.organization_name || row.organization_id,
-    createdAt: row.created_at,
+  const users = await User.find(query).sort({ createdAt: -1 }).lean();
+  
+  const orgIds = [...new Set(users.map(u => u.organizationId))];
+  const orgs = await Organization.find({ _id: { $in: orgIds } }).lean();
+  const orgMap = orgs.reduce((acc, o) => ({ ...acc, [o._id]: o.name }), {});
+
+  // Fetch assigned voters count
+  const results = await Promise.all(users.map(async (u) => {
+    const assignedVoters = await Voter.countDocuments({
+      organizationId: u.organizationId,
+      assignedWorker: { $in: [u.fullName, u.email] }
+    });
+    
+    return {
+      id: u._id,
+      email: u.email,
+      name: u.fullName || '',
+      phone: u.phone || '',
+      accountType: u.role,
+      role: u.subRole || 'Operator',
+      scope: u.scopeType || 'All',
+      scopeValue: u.scopeValue || '',
+      modules: u.modules || [],
+      isActive: u.isActive,
+      assignedVoters,
+      organizationId: u.organizationId,
+      organizationName: orgMap[u.organizationId] || u.organizationId,
+      createdAt: u.createdAt,
+    };
   }));
+  
+  return results;
 };
 
 const validateAccess = (body, enabledModules) => (
@@ -58,18 +65,59 @@ const validateAccess = (body, enabledModules) => (
   && scopes.includes(body.scope)
   && Array.isArray(body.modules)
   && body.modules.every((module) => module !== 'accounts' && modules.includes(module) && enabledModules.includes(module))
+  && (body.scope === 'All' || (typeof body.scopeValue === 'string' && body.scopeValue.trim()))
 );
 
-router.get('/workers', verifyToken, requireModule('workers', 'warroom'), async (req, res) => {
+// Get User's Own Account Profile
+router.get('/profile', verifyToken, async (req, res) => {
   try {
-    res.json(await selectAccounts(req, true));
+    const user = await User.findById(req.user.id).lean();
+    if (!user) return res.status(404).json({ message: 'User not found.' });
+
+    res.json({
+      id: user._id,
+      email: user.email,
+      name: user.fullName || '',
+      phone: user.phone || '',
+      role: user.role,
+      subRole: user.subRole || user.role,
+      scopeType: user.scopeType || 'All',
+      scopeValue: user.scopeValue || '',
+      modules: user.modules || [],
+      isActive: user.isActive,
+      organizationId: user.organizationId,
+    });
   } catch (err) {
-    console.error('Worker list failed:', err.message);
-    res.status(500).json({ message: 'Workers could not be loaded.' });
+    console.error('Profile fetch failed:', err.message);
+    res.status(500).json({ message: 'Profile could not be loaded.' });
   }
 });
 
-router.get('/accounts', verifyToken, isOrganizationAdmin, async (req, res) => {
+router.put('/profile', verifyToken, async (req, res) => {
+  try {
+    const { name, phone } = req.body;
+    if (typeof name !== 'string' || !name.trim() || typeof phone !== 'string' || !phone.trim()) {
+      return res.status(400).json({ message: 'Valid name and phone are required.' });
+    }
+    const user = await User.findByIdAndUpdate(req.user.id, {
+      fullName: name.trim(),
+      phone: phone.trim()
+    }, { new: true }).lean();
+    
+    res.json({
+      message: 'Profile updated successfully.',
+      user: {
+        name: user.fullName,
+        phone: user.phone
+      }
+    });
+  } catch (err) {
+    console.error('Profile update failed:', err.message);
+    res.status(500).json({ message: 'Profile could not be updated.' });
+  }
+});
+
+router.get('/', verifyToken, isOrganizationAdmin, async (req, res) => {
   try {
     res.json(await selectAccounts(req, false));
   } catch (err) {
@@ -78,199 +126,106 @@ router.get('/accounts', verifyToken, isOrganizationAdmin, async (req, res) => {
   }
 });
 
-router.post(['/workers', '/accounts'], verifyToken, isOrganizationAdmin, async (req, res) => {
-  const { email, password, name, phone = '', subRole, scope, scopeValue = '', modules: enabledModules = [] } = req.body;
-  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-    return res.status(400).json({ message: 'Enter a valid email address.' });
-  }
-  if (typeof password !== 'string' || password.length < 8) {
-    return res.status(400).json({ message: 'Password must be at least 8 characters.' });
-  }
-  if (typeof name !== 'string' || !name.trim()) {
-    return res.status(400).json({ message: 'Enter the worker name.' });
-  }
-
-  if (isPlatformAdmin(req) && (typeof req.body.organizationId !== 'string' || !req.body.organizationId.trim())) {
-    return res.status(400).json({ message: 'Choose an organization for this worker account.' });
-  }
-  const organizationId = isPlatformAdmin(req) ? req.body.organizationId.trim() : orgFor(req);
-  if (!organizationId) return res.status(400).json({ message: 'Choose an organization.' });
-
+router.get('/workers', verifyToken, requireModule('workers'), async (req, res) => {
   try {
+    res.json(await selectAccounts(req, true));
+  } catch (err) {
+    console.error('Worker list failed:', err.message);
+    res.status(500).json({ message: 'Workers could not be loaded.' });
+  }
+});
+
+router.post('/', verifyToken, isOrganizationAdmin, async (req, res) => {
+  try {
+    const { name, email, phone, password, role } = req.body;
+    if (typeof name !== 'string' || !name.trim()
+      || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+      || typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ message: 'Valid name, email, and an 8-character password are required.' });
+    }
+    
+    const orgId = orgFor(req);
+    const org = await Organization.findById(orgId).lean();
+    
+    const accountRole = req.user.role === 'admin' ? (role === 'tenant_admin' ? 'tenant_admin' : 'worker') : 'worker';
+    if (accountRole === 'worker' && !validateAccess(req.body, org.enabledModules || [])) {
+      return res.status(400).json({ message: 'Invalid access parameters for worker.' });
+    }
+    
+    const existing = await User.findOne({ email: email.trim().toLowerCase() });
+    if (existing) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+    
     const passwordHash = await bcrypt.hash(password, 10);
-    const result = await db.transaction(async (client) => {
-      const organization = await client.query(
-        'SELECT id, enabled_modules FROM organizations WHERE id = $1 AND is_active = true FOR UPDATE',
-        [organizationId],
-      );
-      if (!organization.rowCount) {
-        const error = new Error('Organization not found or disabled.');
-        error.status = 404;
-        throw error;
-      }
-      const organizationModules = organization.rows[0].enabled_modules || [];
-      if (!validateAccess({ subRole, scope, modules: enabledModules }, organizationModules)) {
-        const error = new Error('Choose a valid worker role, scope, and enabled modules.');
-        error.status = 400;
-        throw error;
-      }
-      const count = await client.query(
-        "SELECT COUNT(*)::integer AS count FROM users WHERE organization_id = $1 AND role = 'worker' AND is_active = true",
-        [organizationId],
-      );
-      if (count.rows[0].count >= 10) {
-        const error = new Error('This organization allows up to 10 active worker accounts.');
-        error.status = 409;
-        throw error;
-      }
-      return client.query(`
-        INSERT INTO users (email, password, role, organization_id, full_name, phone, sub_role, scope_type, scope_value, modules)
-        VALUES ($1, $2, 'worker', $3, $4, $5, $6, $7, $8, $9::jsonb)
-        RETURNING id, email, full_name, phone, sub_role, scope_type, scope_value, modules, is_active, created_at
-      `, [
-        email.trim().toLowerCase(),
-        passwordHash,
-        organizationId,
-        name.trim(),
-        typeof phone === 'string' ? phone.trim() : '',
-        subRole,
-        scope,
-        typeof scopeValue === 'string' ? scopeValue.trim() : '',
-        JSON.stringify(enabledModules),
-      ]);
+    
+    await User.create({
+      _id: `user_${Date.now()}_${Math.floor(Math.random()*1000)}`,
+      email: email.trim().toLowerCase(),
+      passwordHash: passwordHash,
+      fullName: name.trim(),
+      phone: typeof phone === 'string' ? phone.trim() : '0000000000',
+      role: accountRole,
+      organizationId: orgId,
+      subRole: accountRole === 'worker' ? req.body.subRole : null,
+      scopeType: accountRole === 'worker' ? req.body.scope : null,
+      scopeValue: accountRole === 'worker' ? (req.body.scope === 'All' ? null : req.body.scopeValue.trim()) : null,
+      modules: accountRole === 'worker' ? req.body.modules : [],
+      isActive: true
     });
-    const row = result.rows[0];
-    res.status(201).json({
-      id: row.id,
-      email: row.email,
-      name: row.full_name,
-      phone: row.phone,
-      role: row.sub_role,
-      scope: row.scope_type,
-      scopeValue: row.scope_value || '',
-      modules: row.modules,
-      isActive: row.is_active,
-      createdAt: row.created_at,
-    });
+    
+    res.status(201).json({ message: 'Account created successfully.' });
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ message: 'An account with this email already exists.' });
-    if (err.status) return res.status(err.status).json({ message: err.message });
     console.error('Account creation failed:', err.message);
-    res.status(500).json({ message: 'Account could not be created.' });
+    res.status(500).json({ message: 'Could not create account.' });
   }
 });
 
-router.put(['/workers/:id', '/accounts/:id'], verifyToken, isOrganizationAdmin, async (req, res) => {
-  const id = Number.parseInt(req.params.id, 10);
-  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'A valid account ID is required.' });
-  const { name, phone, subRole, scope, scopeValue, modules: enabledModules, isActive, password } = req.body;
-  if (subRole !== undefined && !roles.includes(subRole)) return res.status(400).json({ message: 'Choose a valid role.' });
-  if (scope !== undefined && !scopes.includes(scope)) return res.status(400).json({ message: 'Choose a valid scope.' });
-  if (enabledModules !== undefined && (!Array.isArray(enabledModules) || !enabledModules.every((item) => item !== 'accounts' && modules.includes(item)))) {
-    return res.status(400).json({ message: 'One or more modules are invalid.' });
-  }
-  if (isActive !== undefined && typeof isActive !== 'boolean') return res.status(400).json({ message: 'Account status must be enabled or disabled.' });
-  if (password !== undefined && (typeof password !== 'string' || password.length < 8)) {
-    return res.status(400).json({ message: 'Password must be at least 8 characters.' });
-  }
-
+router.put('/:id', verifyToken, isOrganizationAdmin, async (req, res) => {
   try {
-    const target = await db.query(
-      `SELECT u.organization_id, u.is_active, o.enabled_modules FROM users u
-       JOIN organizations o ON o.id = u.organization_id
-       WHERE u.id = $1 AND u.role = 'worker' ${isPlatformAdmin(req) ? '' : 'AND u.organization_id = $2'}`,
-      isPlatformAdmin(req) ? [id] : [id, orgFor(req)],
-    );
-    if (!target.rowCount) return res.status(404).json({ message: 'Account not found.' });
-    const availableModules = target.rows[0].enabled_modules || [];
-    if (enabledModules !== undefined && enabledModules.some((item) => item === 'accounts' || !availableModules.includes(item))) {
-      return res.status(400).json({ message: 'This organization has not enabled one or more selected modules.' });
+    const orgId = orgFor(req);
+    const org = await Organization.findById(orgId).lean();
+    
+    if (!validateAccess(req.body, org.enabledModules || [])) {
+      return res.status(400).json({ message: 'Invalid access parameters.' });
     }
 
-    const set = [];
-    const values = [];
-    const add = (column, value) => {
-      values.push(value);
-      set.push(`${column} = $${values.length}${column === 'modules' ? '::jsonb' : ''}`);
+    const { name, phone } = req.body;
+    
+    const query = { _id: req.params.id, role: 'worker' };
+    if (!isPlatformAdmin(req)) query.organizationId = orgId;
+    
+    const update = {
+      subRole: req.body.subRole,
+      scopeType: req.body.scope,
+      scopeValue: req.body.scope === 'All' ? null : req.body.scopeValue.trim(),
+      modules: req.body.modules
     };
-    if (name !== undefined) {
-      if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Name cannot be empty.' });
-      add('full_name', name.trim());
-    }
-    if (phone !== undefined) {
-      if (typeof phone !== 'string') return res.status(400).json({ message: 'Phone must be text.' });
-      add('phone', phone.trim());
-    }
-    if (subRole !== undefined) add('sub_role', subRole);
-    if (scope !== undefined) add('scope_type', scope);
-    if (scopeValue !== undefined) {
-      if (typeof scopeValue !== 'string') return res.status(400).json({ message: 'Scope value must be text.' });
-      add('scope_value', scopeValue.trim());
-    }
-    if (enabledModules !== undefined) add('modules', JSON.stringify(enabledModules));
-    if (isActive !== undefined) add('is_active', isActive);
-    if (password !== undefined) add('password', await bcrypt.hash(password, 10));
-    if (!set.length) return res.status(400).json({ message: 'No account changes were provided.' });
+    
+    if (typeof name === 'string' && name.trim()) update.fullName = name.trim();
+    if (typeof phone === 'string' && phone.trim()) update.phone = phone.trim();
 
-    const result = await db.transaction(async (client) => {
-      const organizationId = target.rows[0].organization_id;
-      if (isActive === true && !target.rows[0].is_active) {
-        const organization = await client.query(
-          'SELECT is_active FROM organizations WHERE id = $1 FOR UPDATE',
-          [organizationId],
-        );
-        if (!organization.rowCount || !organization.rows[0].is_active) {
-          const error = new Error('This organization is disabled.');
-          error.status = 409;
-          throw error;
-        }
-        const count = await client.query(
-          "SELECT COUNT(*)::integer AS count FROM users WHERE organization_id = $1 AND role = 'worker' AND is_active = true",
-          [organizationId],
-        );
-        if (count.rows[0].count >= 10) {
-          const error = new Error('This organization allows up to 10 active worker accounts.');
-          error.status = 409;
-          throw error;
-        }
-      }
-      values.push(id);
-      const organizationFilter = isPlatformAdmin(req) ? '' : `AND organization_id = $${values.push(orgFor(req))}`;
-      return client.query(`
-        UPDATE users SET ${set.join(', ')}
-        WHERE id = $${values.length - (organizationFilter ? 1 : 0)} AND role = 'worker'
-        ${organizationFilter}
-        RETURNING id, email, full_name, phone, sub_role, scope_type, scope_value, modules, is_active, created_at
-      `, values);
-    });
-    if (!result.rowCount) return res.status(404).json({ message: 'Account not found.' });
-    const row = result.rows[0];
-    res.json({
-      id: row.id, email: row.email, name: row.full_name, phone: row.phone, role: row.sub_role,
-      scope: row.scope_type, scopeValue: row.scope_value || '', modules: row.modules,
-      isActive: row.is_active, createdAt: row.created_at,
-    });
+    const user = await User.findOneAndUpdate(query, { $set: update }, { new: true });
+    
+    if (!user) return res.status(404).json({ message: 'Account not found or access denied.' });
+    res.json({ message: 'Account updated successfully.' });
   } catch (err) {
-    if (err.status) return res.status(err.status).json({ message: err.message });
     console.error('Account update failed:', err.message);
-    res.status(500).json({ message: 'Account could not be updated.' });
+    res.status(500).json({ message: 'Could not update account.' });
   }
 });
 
-router.delete(['/workers/:id', '/accounts/:id'], verifyToken, isOrganizationAdmin, async (req, res) => {
-  const id = Number.parseInt(req.params.id, 10);
-  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ message: 'A valid account ID is required.' });
+router.delete('/:id', verifyToken, isOrganizationAdmin, async (req, res) => {
   try {
-    const result = await db.query(`
-      UPDATE users SET is_active = false
-      WHERE id = $1 AND role = 'worker' ${isPlatformAdmin(req) ? '' : 'AND organization_id = $2'}
-      RETURNING id
-    `, isPlatformAdmin(req) ? [id] : [id, orgFor(req)]);
-    if (!result.rowCount) return res.status(404).json({ message: 'Account not found.' });
-    res.json({ success: true, message: 'Account disabled.' });
+    const query = { _id: req.params.id, role: 'worker' };
+    if (!isPlatformAdmin(req)) query.organizationId = orgFor(req);
+
+    const result = await User.deleteOne(query);
+    if (result.deletedCount === 0) return res.status(404).json({ message: 'Account not found or access denied.' });
+    res.json({ message: 'Account deleted successfully.' });
   } catch (err) {
-    console.error('Account disable failed:', err.message);
-    res.status(500).json({ message: 'Account could not be disabled.' });
+    console.error('Account deletion failed:', err.message);
+    res.status(500).json({ message: 'Could not delete account.' });
   }
 });
 
