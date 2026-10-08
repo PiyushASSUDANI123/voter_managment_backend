@@ -53,6 +53,8 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     const dataBuffer = fs.readFileSync(filePath);
     const data = await pdfParse(dataBuffer);
     
+    const organizationId = req.body.organizationId || "org_default";
+
     // Extract Voter IDs (EPIC Numbers) using Regex
     const text = data.text;
     const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2}\/\d{2}\/\d{3}\/\d{6}/gi;
@@ -73,7 +75,7 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
               serialNo: index + 1,
               nameEn: "PDF Extracted",
               nameHi: "PDF Extracted",
-              organizationId: "org_default"
+              organizationId: organizationId
             }
           },
           upsert: true
