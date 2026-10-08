@@ -262,6 +262,27 @@ router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
+router.delete('/master-data', verifyToken, isAdmin, async (req, res) => {
+  const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+  const wardNo = typeof req.query.wardNo === 'string' ? req.query.wardNo.trim() : '';
+
+  if (!orgId) {
+    return res.status(400).json({ message: 'Organization ID is required for bulk delete.' });
+  }
+
+  const query = { organizationId: orgId };
+  if (wardNo) query.wardNo = wardNo;
+
+  try {
+    const result = await Voter.deleteMany(query);
+    cache.flushAll(); // Clear cache to reflect deletions
+    res.json({ message: 'Records deleted successfully.', deletedCount: result.deletedCount });
+  } catch (err) {
+    console.error('Master data bulk delete failed:', err.message);
+    res.status(500).json({ message: 'Bulk delete failed.' });
+  }
+});
+
 router.get('/system-health', verifyToken, isAdmin, async (_req, res) => {
   let database = 'unavailable';
   try {
