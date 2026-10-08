@@ -6,9 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const cron = require('node-cron');
-const { Voter } = require('../../models');
+const { Voter } = require('../models');
 
-const uploadDir = path.join(__dirname, '../../uploads');
+const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
