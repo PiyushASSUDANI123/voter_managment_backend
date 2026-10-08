@@ -7,6 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const cron = require('node-cron');
 const { Voter } = require('../models');
+const { fixCorruptedHindi } = require('../lib/hindiDictionary');
 
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -19,9 +20,20 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+const uploadJobs = new Map();
+
 // Task 4: STRICT AUTOMATED CLEANUP (2-Hour Deletion)
 cron.schedule('0 * * * *', () => {
   console.log('Running PDF cleanup cron job...');
+  
+  // Cleanup uploadJobs map (older than 2 hours)
+  const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
+  for (const [id, job] of uploadJobs.entries()) {
+    if (new Date(job.uploadedAt) < twoHoursAgo) {
+      uploadJobs.delete(id);
+    }
+  }
+
   fs.readdir(uploadDir, (err, files) => {
     if (err) return console.error('Cleanup error:', err);
     files.forEach(file => {
@@ -44,6 +56,18 @@ cron.schedule('0 * * * *', () => {
   });
 });
 
+// GET /jobs - to fetch recent upload jobs
+router.get('/jobs', (req, res) => {
+  const orgId = req.query.organizationId;
+  if (!orgId) return res.status(400).json({ error: 'Organization ID is required' });
+  
+  const jobs = Array.from(uploadJobs.values())
+    .filter(j => j.organizationId === orgId)
+    .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+  
+  res.json(jobs);
+});
+
 // Task 3: Admin PDF Upload & Voter ID Extraction
 router.post('/upload', upload.single('pdf'), async (req, res) => {
   try {
@@ -51,9 +75,19 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     
     const filePath = req.file.path;
     const organizationId = req.body.organizationId || "org_default";
+    const jobId = crypto.randomUUID();
+
+    uploadJobs.set(jobId, {
+      id: jobId,
+      filename: req.file.originalname,
+      organizationId: organizationId,
+      status: 'processing',
+      extractedCount: 0,
+      uploadedAt: new Date().toISOString()
+    });
 
     // Respond immediately to avoid browser timeout for large PDFs
-    res.json({ message: 'Upload started', backgroundProcessing: true });
+    res.json({ message: 'Upload started', backgroundProcessing: true, jobId });
 
     // Process asynchronously
     (async () => {
@@ -99,8 +133,8 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
           let genderVal = "अन्य";
 
           if (lines.length >= 5) {
-            relativeNameHi = lines[lines.length - 1];
-            nameHi = lines[lines.length - 2];
+            relativeNameHi = fixCorruptedHindi(lines[lines.length - 1]);
+            nameHi = fixCorruptedHindi(lines[lines.length - 2]);
             houseNo = lines[lines.length - 3];
             const genderRaw = lines[lines.length - 4];
             const ageRaw = lines[lines.length - 5];
@@ -142,8 +176,18 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
         if (operations.length > 0) {
           await Voter.bulkWrite(operations, { ordered: false });
         }
+        
+        uploadJobs.set(jobId, {
+          ...uploadJobs.get(jobId),
+          status: 'completed',
+          extractedCount: epics.length
+        });
         console.log(`Background PDF processing complete for ${filePath}. Extracted ${epics.length} voters.`);
       } catch (bgError) {
+        uploadJobs.set(jobId, {
+          ...uploadJobs.get(jobId),
+          status: 'failed'
+        });
         console.error(`Background PDF processing failed for ${filePath}:`, bgError);
       }
     })();
