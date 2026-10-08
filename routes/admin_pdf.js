@@ -83,19 +83,30 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     const operations = epics.map((current, i) => {
       // Voter block is typically the text before the EPIC, up to the previous EPIC
       const startIndex = i === 0 ? 0 : epics[i-1].index + epics[i-1].epic.length;
-      const block = text.substring(startIndex, current.index);
+      let block = text.substring(startIndex, current.index).trimEnd();
       
-      const nameMatch = block.match(/(?:निर्वाचक का नाम|नाम|Name)\s*[:\-]?\s*([^\n\r]+)/i);
-      const fatherMatch = block.match(/(?:पिता|पति|माता|अन्य)\s*का\s*नाम\s*[:\-]?\s*([^\n\r]+)/i);
-      const relationTypeMatch = block.match(/(पिता|पति|माता|अन्य)/);
-      const houseMatch = block.match(/(?:मकान\s*संख्या|House\s*No)\s*[:\-]?\s*([^\n\r]+)/i);
-      const ageMatch = block.match(/(?:आयु|Age)\s*[:\-]?\s*(\d+)/i);
-      const genderMatch = block.match(/(?:लिंग|Gender)\s*[:\-]?\s*(पुरुष|महिला|स्त्री|अन्य|Male|Female)/i);
+      const lines = block.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
       
-      let genderVal = "";
-      if (genderMatch) {
-        const g = genderMatch[1].trim().toLowerCase();
-        genderVal = (g === 'male' || g === 'पुरुष') ? 'पुरुष' : (g === 'female' || g === 'महिला' || g === 'स्त्री') ? 'स्त्री' : 'अन्य';
+      let nameHi = "PDF Extracted";
+      let relativeNameHi = "";
+      let relationType = "";
+      let houseNo = "";
+      let age = null;
+      let genderVal = "अन्य";
+
+      if (lines.length >= 5) {
+        relativeNameHi = lines[lines.length - 1];
+        nameHi = lines[lines.length - 2];
+        houseNo = lines[lines.length - 3];
+        const genderRaw = lines[lines.length - 4];
+        const ageRaw = lines[lines.length - 5];
+        
+        age = parseInt(ageRaw) || null;
+        if (genderRaw.includes("पचरष") || genderRaw.includes("प")) genderVal = "पुरुष";
+        else if (genderRaw.includes("सल") || genderRaw.includes("स")) genderVal = "स्त्री";
+        
+        // Simple heuristic for relation type based on gender
+        relationType = genderVal === "स्त्री" ? "पति" : "पिता";
       }
 
       return {
@@ -103,11 +114,11 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
           filter: { epic: current.epic, organizationId: organizationId },
           update: {
             $set: {
-              nameHi: nameMatch ? nameMatch[1].trim() : "PDF Extracted",
-              relativeNameHi: fatherMatch ? fatherMatch[1].trim() : "",
-              relationType: relationTypeMatch ? relationTypeMatch[1].trim() : "",
-              houseNo: houseMatch ? houseMatch[1].trim() : "",
-              age: ageMatch ? parseInt(ageMatch[1], 10) : null,
+              nameHi: nameHi,
+              relativeNameHi: relativeNameHi,
+              relationType: relationType,
+              houseNo: houseNo,
+              age: age,
               gender: genderVal
             },
             $setOnInsert: {
@@ -116,7 +127,7 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
               wardNo: defaultWardNo,
               partNo: defaultPartNo,
               serialNo: i + 1,
-              nameEn: nameMatch ? nameMatch[1].trim() : "PDF Extracted",
+              nameEn: nameHi,
               organizationId: organizationId
             }
           },
