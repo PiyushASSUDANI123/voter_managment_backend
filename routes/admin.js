@@ -3,7 +3,8 @@ const express = require('express');
 const multer = require('multer');
 const ExcelJS = require('exceljs');
 const bcrypt = require('bcryptjs');
-const db = require('../db');
+const mongoose = require('mongoose');
+const { Organization, User, Voter } = require('../models/index');
 const { verifyToken, isAdmin } = require('../middleware/authMiddleware');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
 const cache = require('../lib/cache');
@@ -16,20 +17,21 @@ const workbookType = 'application/vnd.openxmlformats-officedocument.spreadsheetm
 
 router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
   try {
-    const result = await db.query(`
-      SELECT o.id, o.name, o.enabled_modules, o.allowed_wards, o.is_active, o.created_at,
-        (SELECT COUNT(*)::integer FROM users u WHERE u.organization_id = o.id AND u.role = 'tenant_admin') AS admin_count,
-        (SELECT COUNT(*)::integer FROM users u WHERE u.organization_id = o.id AND u.role = 'worker' AND u.is_active = true) AS active_workers,
-        (SELECT COUNT(*)::integer FROM voters v WHERE v.organization_id = o.id) AS voter_count
-      FROM organizations o
-      WHERE o.id <> 'org_default'
-      ORDER BY o.created_at DESC
-    `);
-    res.json(result.rows.map((row) => ({
-      id: row.id, name: row.name, modules: row.enabled_modules || [],
-      wards: row.allowed_wards || [], isActive: row.is_active, createdAt: row.created_at,
-      adminCount: row.admin_count, activeWorkers: row.active_workers, voterCount: row.voter_count,
-    })));
+    const orgs = await Organization.find({ _id: { $ne: 'org_default' } }).sort({ createdAt: -1 }).lean();
+    
+    const result = await Promise.all(orgs.map(async (o) => {
+      const adminCount = await User.countDocuments({ organizationId: o._id, role: 'tenant_admin' });
+      const activeWorkers = await User.countDocuments({ organizationId: o._id, role: 'worker', isActive: true });
+      const voterCount = await Voter.countDocuments({ organizationId: o._id });
+      
+      return {
+        id: o._id, name: o.name, modules: o.enabledModules || [],
+        wards: o.allowedWards || [], isActive: o.isActive, createdAt: o.createdAt,
+        adminCount, activeWorkers, voterCount,
+      };
+    }));
+    
+    res.json(result);
   } catch (err) {
     console.error('Organization list failed:', err.message);
     res.status(500).json({ message: 'Organizations could not be loaded.' });
@@ -53,94 +55,207 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
   const id = `tenant_${crypto.randomUUID()}`;
   const enabledModules = [...new Set([...moduleList, 'accounts'])];
   const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
+  
+  const session = await mongoose.startSession();
   try {
+    session.startTransaction();
+    
     const passwordHash = await bcrypt.hash(password, 10);
-    await db.transaction(async (client) => {
-      await client.query(
-        'INSERT INTO organizations (id, name, enabled_modules, allowed_wards) VALUES ($1, $2, $3::jsonb, $4::jsonb)',
-        [id, name.trim(), JSON.stringify(enabledModules), JSON.stringify(allowedWards)],
-      );
-      await client.query(`
-        INSERT INTO users (email, password, role, organization_id, full_name, sub_role, modules)
-        VALUES ($1, $2, 'tenant_admin', $3, $4, 'Admin', $5::jsonb)
-      `, [email.trim().toLowerCase(), passwordHash, id, name.trim(), JSON.stringify(enabledModules)]);
-    });
-    res.status(201).json({ id, name: name.trim(), modules: enabledModules, wards: allowedWards, activeWorkers: 0, voterCount: 0, isActive: true });
+    
+    await Organization.create([{
+      _id: id,
+      name: name.trim(),
+      enabledModules: enabledModules,
+      allowedWards: allowedWards
+    }], { session });
+    
+    await User.create([{
+      _id: `user_${crypto.randomUUID()}`,
+      email: email.trim().toLowerCase(),
+      passwordHash: passwordHash,
+      fullName: 'Tenant Admin',
+      phone: '0000000000',
+      role: 'tenant_admin',
+      organizationId: id
+    }], { session });
+    
+    await session.commitTransaction();
+    res.status(201).json({ success: true, message: 'Organization created successfully' });
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ message: 'An account with this email already exists.' });
+    await session.abortTransaction();
+    if (err.code === 11000) return res.status(409).json({ message: 'Admin email is already registered.' });
     console.error('Organization creation failed:', err.message);
-    res.status(500).json({ message: 'Organization could not be created.' });
+    res.status(500).json({ message: 'Could not create organization.' });
+  } finally {
+    session.endSession();
   }
 });
 
 router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
-  const { id } = req.params;
-  const { name, modules: moduleList, wards, isActive } = req.body;
-  if (!id || id === 'org_default') return res.status(400).json({ message: 'A valid tenant is required.' });
-  if (moduleList !== undefined && (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module)))) {
-    return res.status(400).json({ message: 'One or more modules are invalid.' });
+  const { name, isActive } = req.body;
+  const moduleList = req.body.modules;
+  const wards = req.body.wards;
+  
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Organization name is required.' });
+  if (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module))
+    || !Array.isArray(wards) || !wards.every((ward) => typeof ward === 'string' && ward.trim())) {
+    return res.status(400).json({ message: 'Choose valid modules and ward names.' });
   }
-  if (wards !== undefined && (!Array.isArray(wards) || !wards.every((ward) => typeof ward === 'string' && ward.trim()))) {
-    return res.status(400).json({ message: 'Ward values must be non-empty text.' });
-  }
-  if (isActive !== undefined && typeof isActive !== 'boolean') return res.status(400).json({ message: 'Tenant status must be enabled or disabled.' });
-
-  const setters = [];
-  const values = [];
-  const add = (column, value, json = false) => {
-    values.push(value);
-    setters.push(`${column} = $${values.length}${json ? '::jsonb' : ''}`);
-  };
-  if (name !== undefined) {
-    if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Tenant name cannot be empty.' });
-    add('name', name.trim());
-  }
-  if (moduleList !== undefined) add('enabled_modules', JSON.stringify([...new Set([...moduleList, 'accounts'])]), true);
-  if (wards !== undefined) add('allowed_wards', JSON.stringify([...new Set(wards.map((ward) => ward.trim()))]), true);
-  if (isActive !== undefined) add('is_active', isActive);
-  if (!setters.length) return res.status(400).json({ message: 'No tenant changes were provided.' });
-
+  
   try {
-    values.push(id);
-    const result = await db.query(
-      `UPDATE organizations SET ${setters.join(', ')} WHERE id = $${values.length} AND id <> 'org_default' RETURNING id`,
-      values,
-    );
-    if (!result.rowCount) return res.status(404).json({ message: 'Tenant not found.' });
-    res.json({ success: true });
+    const enabledModules = [...new Set([...moduleList, 'accounts'])];
+    const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
+    
+    const org = await Organization.findByIdAndUpdate(req.params.id, {
+      name: name.trim(),
+      enabledModules,
+      allowedWards,
+      isActive: typeof isActive === 'boolean' ? isActive : true
+    });
+    
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+    res.json({ success: true, message: 'Organization updated.' });
   } catch (err) {
     console.error('Organization update failed:', err.message);
-    res.status(500).json({ message: 'Organization could not be updated.' });
+    res.status(500).json({ message: 'Could not update organization.' });
+  }
+});
+
+router.delete('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
+  const session = await mongoose.startSession();
+  try {
+    session.startTransaction();
+    await User.deleteMany({ organizationId: req.params.id }, { session });
+    await Voter.deleteMany({ organizationId: req.params.id }, { session });
+    const result = await Organization.deleteOne({ _id: req.params.id }, { session });
+    await session.commitTransaction();
+    
+    if (result.deletedCount === 0) return res.status(404).json({ message: 'Organization not found.' });
+    res.json({ success: true, message: 'Organization deleted.' });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Organization deletion failed:', err.message);
+    res.status(500).json({ message: 'Could not delete organization.' });
+  } finally {
+    session.endSession();
+  }
+});
+
+// GET all users
+router.get('/users', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+    const query = orgId ? { organizationId: orgId } : {};
+    
+    const users = await User.find(query).sort({ createdAt: -1 }).lean();
+    
+    const orgIds = [...new Set(users.map(u => u.organizationId))];
+    const orgs = await Organization.find({ _id: { $in: orgIds } }).lean();
+    const orgMap = orgs.reduce((acc, o) => ({ ...acc, [o._id]: o }), {});
+    
+    res.json(users.map((u) => ({
+      id: u._id, email: u.email, fullName: u.fullName, phone: u.phone,
+      role: u.role, subRole: u.subRole, scopeType: u.scopeType, scopeValue: u.scopeValue,
+      isActive: u.isActive,
+      organizationId: u.organizationId,
+      organizationName: orgMap[u.organizationId]?.name || 'Unknown',
+    })));
+  } catch (err) {
+    console.error('User list failed:', err.message);
+    res.status(500).json({ message: 'Users could not be loaded.' });
+  }
+});
+
+router.post('/users', verifyToken, isAdmin, async (req, res) => {
+  const { email, password, fullName, phone, role, organizationId, subRole, scopeType, scopeValue, modules } = req.body;
+  if (!email || !password || !fullName || !phone || !role || !organizationId) {
+    return res.status(400).json({ message: 'All fields are required.' });
+  }
+
+  try {
+    const passwordHash = await bcrypt.hash(password, 10);
+    const existing = await User.findOne({ email: email.trim().toLowerCase() });
+    if (existing) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+    
+    await User.create({
+      _id: `user_${crypto.randomUUID()}`,
+      email: email.trim().toLowerCase(),
+      passwordHash: passwordHash,
+      fullName: fullName.trim(),
+      phone: phone.trim(),
+      role: role.trim(),
+      organizationId: organizationId.trim(),
+      subRole: subRole?.trim(),
+      scopeType: scopeType?.trim(),
+      scopeValue: scopeValue?.trim(),
+      modules: Array.isArray(modules) ? modules : [],
+    });
+    
+    res.status(201).json({ message: 'User created successfully.' });
+  } catch (err) {
+    console.error('User creation failed:', err.message);
+    res.status(500).json({ message: 'Could not create user.' });
+  }
+});
+
+router.delete('/users/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const result = await User.deleteOne({ _id: req.params.id });
+    if (result.deletedCount === 0) return res.status(404).json({ message: 'User not found.' });
+    res.json({ message: 'User deleted.' });
+  } catch (err) {
+    console.error('User deletion failed:', err.message);
+    res.status(500).json({ message: 'Could not delete user.' });
+  }
+});
+
+router.put('/users/:id/role', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { role, subRole, scopeType, scopeValue, modules } = req.body;
+    if (!role) return res.status(400).json({ message: 'Role is required.' });
+    
+    const update = { role: role.trim() };
+    if (subRole !== undefined) update.subRole = subRole;
+    if (scopeType !== undefined) update.scopeType = scopeType;
+    if (scopeValue !== undefined) update.scopeValue = scopeValue;
+    if (Array.isArray(modules)) update.modules = modules;
+    
+    const result = await User.updateOne({ _id: req.params.id }, { $set: update });
+    if (result.matchedCount === 0) return res.status(404).json({ message: 'User not found.' });
+    res.json({ message: 'User role updated.' });
+  } catch (err) {
+    console.error('Role update failed:', err.message);
+    res.status(500).json({ message: 'Could not update user role.' });
+  }
+});
+
+router.put('/users/:id/active', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { isActive } = req.body;
+    if (typeof isActive !== 'boolean') return res.status(400).json({ message: 'Invalid active status.' });
+    const result = await User.updateOne({ _id: req.params.id }, { $set: { isActive } });
+    if (result.matchedCount === 0) return res.status(404).json({ message: 'User not found.' });
+    res.json({ message: 'User active status updated.' });
+  } catch (err) {
+    console.error('Active status update failed:', err.message);
+    res.status(500).json({ message: 'Could not update user active status.' });
   }
 });
 
 router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
-  const params = [];
   const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
-  const filter = orgId
-    ? (params.push(orgId), `WHERE organization_id = $${params.length}`)
-    : '';
+  const query = orgId ? { organizationId: orgId } : {};
     
   const cacheKey = `master_data_${orgId || 'all'}`;
   const cachedData = cache.get(cacheKey);
   if (cachedData) return res.json(cachedData);
 
   try {
-    const result = await db.query(
-      `SELECT * FROM voters ${filter} ORDER BY ward_no ASC, part_no ASC, serial_no ASC LIMIT 1000`,
-      params,
-    );
-    const data = result.rows.map((row) => ({
-      _id: row.id, epic: row.epic, nameEn: row.name_en, nameHi: row.name_hi,
-      relativeNameEn: row.relative_name_en, relativeNameHi: row.relative_name_hi,
-      relationType: row.relation_type, age: row.age, gender: row.gender,
-      houseNo: row.house_no, wardNo: row.ward_no, partNo: row.part_no,
-      serialNo: row.serial_no, phone: row.phone, caste: row.caste,
-      surety: row.surety, supportStatus: row.support_status, voted: row.voted,
-      organizationId: row.organization_id,
-    }));
-    cache.set(cacheKey, data);
-    res.json(data);
+    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).limit(1000).lean();
+    cache.set(cacheKey, voters);
+    res.json(voters);
   } catch (err) {
     console.error('Master data query failed:', err.message);
     res.status(500).json({ message: 'Master data could not be loaded.' });
@@ -150,145 +265,128 @@ router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
 router.get('/system-health', verifyToken, isAdmin, async (_req, res) => {
   let database = 'unavailable';
   try {
-    await db.query('SELECT 1');
-    database = 'connected';
+    if (mongoose.connection.readyState === 1) database = 'connected';
   } catch (err) {
     console.error('Admin database health check failed:', err.message);
   }
   const metaReady = Boolean(process.env.META_WHATSAPP_TOKEN?.trim()
     && process.env.META_PHONE_ID?.trim()
     && process.env.META_GRAPH_API_VERSION?.trim());
-  res.json({
-    database: db.isConfigured() ? database : 'not_configured',
-    whatsapp: metaReady ? 'configured' : 'not_configured',
-    platform: 'operational',
-    checkedAt: new Date().toISOString(),
-  });
+  res.json({ database, metaReady, platform: 'MongoDB' });
 });
 
-router.get('/export.xlsx', verifyToken, isAdmin, async (req, res) => {
-  const organizationId = typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
-    ? req.query.organizationId.trim()
-    : '';
-  const params = [];
-  const where = organizationId ? (params.push(organizationId), `WHERE organization_id = $${params.length}`) : '';
+router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async (req, res) => {
+  if (!req.file || !req.file.buffer) return res.status(400).json({ message: 'No valid file uploaded.' });
+  const organizationId = typeof req.body.organizationId === 'string' && req.body.organizationId.trim()
+    ? req.body.organizationId.trim()
+    : 'org_default';
+
+  const parseRow = (row) => {
+    const rowValues = row.values;
+    if (!rowValues || rowValues.length < 5) return null; // Minimum expected columns
+    return {
+      epic: String(rowValues[1] || '').trim().toUpperCase(),
+      wardNo: String(rowValues[2] || '').trim(),
+      partNo: String(rowValues[3] || '').trim(),
+      serialNo: parseInt(rowValues[4], 10),
+      nameEn: String(rowValues[5] || '').trim(),
+      nameHi: String(rowValues[6] || '').trim(),
+      age: parseInt(rowValues[7], 10) || null,
+      gender: String(rowValues[8] || '').trim(),
+      relationType: String(rowValues[9] || '').trim(),
+      relativeNameEn: String(rowValues[10] || '').trim(),
+      relativeNameHi: String(rowValues[11] || '').trim(),
+      houseNo: String(rowValues[12] || '').trim(),
+      houseNoHi: String(rowValues[13] || '').trim(),
+      mobileNo: String(rowValues[14] || '').trim(),
+      caste: String(rowValues[15] || '').trim(),
+      familyId: String(rowValues[16] || '').trim(),
+      villageName: String(rowValues[17] || '').trim(),
+      organizationId,
+    };
+  };
+
   try {
-    const [voters, organizations, users, dispatches] = await Promise.all([
-      db.query(`SELECT * FROM voters ${where} ORDER BY organization_id, ward_no, part_no, serial_no`, params),
-      db.query(`
-        SELECT o.id, o.name, o.enabled_modules, o.allowed_wards, o.is_active, o.created_at,
-          (SELECT COUNT(*)::integer FROM users u WHERE u.organization_id = o.id AND u.role = 'tenant_admin') AS admin_count,
-          (SELECT COUNT(*)::integer FROM users u WHERE u.organization_id = o.id AND u.role = 'worker' AND u.is_active) AS active_workers,
-          (SELECT COUNT(*)::integer FROM voters v WHERE v.organization_id = o.id) AS voter_count
-        FROM organizations o ${organizationId ? 'WHERE o.id = $1' : ''}
-        ORDER BY o.created_at DESC
-      `, organizationId ? [organizationId] : []),
-      db.query(`
-        SELECT id, email, full_name, phone, role, sub_role, scope_type, scope_value,
-          modules, is_active, organization_id, created_at
-        FROM users ${where} ORDER BY organization_id, created_at
-      `, params),
-      db.query(`
-        SELECT id, voter_id, voter_epic, voter_name, recipient_phone, slip_type,
-          status, provider_message_id, error_message, organization_id, created_at
-        FROM slip_dispatches ${where} ORDER BY organization_id, created_at DESC
-      `, params),
-    ]);
-    const workbook = createWorkbook();
-    addSheet(workbook, 'Voters', voters.rows);
-    addSheet(workbook, 'Organizations', organizations.rows);
-    addSheet(workbook, 'Accounts', users.rows);
-    addSheet(workbook, 'Dispatches', dispatches.rows);
-    await sendWorkbook(res, workbook, 'platform-data.xlsx');
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(req.file.buffer);
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) return res.status(400).json({ message: 'The uploaded Excel file has no worksheets.' });
+
+    let rowsProcessed = 0;
+    const batchSize = 1000;
+    let batch = [];
+    
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // Skip header
+      const voter = parseRow(row);
+      if (voter && voter.epic && voter.wardNo && voter.partNo && !isNaN(voter.serialNo)) {
+        batch.push(voter);
+      }
+    });
+
+    if (batch.length === 0) return res.status(400).json({ message: 'No valid voter records found in file.' });
+    
+    // Clear old records for this org to simulate SQL UPSERT or fresh start
+    // If we are appending, we could use upsert. Here we insert fresh if asked.
+    // We'll use insertMany with ordered: false to skip duplicates
+    
+    try {
+      await Voter.insertMany(batch, { ordered: false });
+      rowsProcessed = batch.length;
+    } catch (e) {
+      // If there are duplicate epics, it throws but still inserts valid ones
+      if (e.code === 11000) {
+        rowsProcessed = e.insertedDocs?.length || 0;
+      } else {
+        throw e;
+      }
+    }
+    
+    // Clear cache
+    const keys = cache.keys();
+    keys.forEach(k => cache.del(k));
+
+    res.json({
+      success: true,
+      message: `File uploaded successfully. Processed ${rowsProcessed} valid rows.`,
+      count: rowsProcessed
+    });
   } catch (err) {
-    console.error('Platform export failed:', err.message);
-    res.status(500).json({ message: 'Excel export could not be created.' });
+    console.error('Excel processing error:', err);
+    res.status(500).json({ message: 'Error processing the Excel file. Check the format.' });
   }
 });
 
-const voterColumns = [
-  'epic', 'name_en', 'name_hi', 'relative_name_en', 'relative_name_hi', 'relation_type',
-  'age', 'gender', 'house_no', 'ward_no', 'part_no', 'serial_no', 'phone', 'caste',
-  'surety', 'support_status', 'is_migrant', 'migrant_location', 'assigned_worker',
-  'village_name', 'family_id', 'notes', 'voted',
-];
-
-router.get('/import-template.xlsx', verifyToken, isAdmin, async (_req, res) => {
-  const workbook = createWorkbook();
-  addSheet(workbook, 'Voters', [Object.fromEntries(voterColumns.map((column) => [column, '']))]);
-  await sendWorkbook(res, workbook, 'voter-import-template.xlsx');
-});
-
-router.post('/import.xlsx', verifyToken, isAdmin, upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ message: 'Choose an Excel workbook to import.' });
-  const organizationId = typeof req.body.organizationId === 'string' ? req.body.organizationId.trim() : '';
-  if (!organizationId) return res.status(400).json({ message: 'Choose the organization for these voter records.' });
-
+router.get('/export-voters', verifyToken, isAdmin, async (req, res) => {
   try {
-    const organization = await db.query('SELECT id FROM organizations WHERE id = $1 AND is_active = true', [organizationId]);
-    if (!organization.rowCount) return res.status(404).json({ message: 'Organization not found or disabled.' });
+    const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+    const query = orgId ? { organizationId: orgId } : {};
+    
+    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    
     const workbook = createWorkbook();
-    await workbook.xlsx.load(req.file.buffer);
-    const sheet = workbook.worksheets[0];
-    if (!sheet || sheet.rowCount < 2) return res.status(400).json({ message: 'Workbook must contain a header row and voter records.' });
-    const headers = [];
-    sheet.getRow(1).eachCell({ includeEmpty: true }, (cell, index) => { headers[index] = String(cell.value ?? '').trim().toLowerCase(); });
-    const epicIndex = headers.indexOf('epic');
-    if (epicIndex < 0) return res.status(400).json({ message: 'Workbook is missing the required "epic" column. Download the template for the supported format.' });
-    const rows = [];
-    sheet.eachRow((sheetRow, rowNumber) => {
-      if (rowNumber === 1) return;
-      const row = Object.fromEntries(voterColumns.map((key) => [key, null]));
-      headers.forEach((key, index) => {
-        if (!voterColumns.includes(key)) return;
-        const value = sheetRow.getCell(index).value;
-        if (value !== null && !['string', 'number', 'boolean'].includes(typeof value)) {
-          throw new Error(`Unsupported cell value at worksheet row ${rowNumber}.`);
-        }
-        row[key] = value;
-      });
-      row.epic = String(row.epic ?? '').trim().toUpperCase();
-      if (!row.epic) return;
-      if (row.epic.length > 50) throw new Error(`EPIC value exceeds 50 characters at worksheet row ${rowNumber}.`);
-      if (row.age !== null && row.age !== '') {
-        const age = Number(row.age);
-        if (!Number.isInteger(age) || age < 0 || age > 130) throw new Error(`Invalid age at worksheet row ${rowNumber}.`);
-        row.age = age;
-      } else row.age = null;
-      if (row.serial_no !== null && row.serial_no !== '') {
-        const serial = Number(row.serial_no);
-        if (!Number.isInteger(serial) || serial < 0) throw new Error(`Invalid serial number at worksheet row ${rowNumber}.`);
-        row.serial_no = serial;
-      } else row.serial_no = null;
-      row.is_migrant = row.is_migrant === true || ['true', 'yes', '1'].includes(String(row.is_migrant ?? '').trim().toLowerCase());
-      row.voted = row.voted === true || ['true', 'yes', '1'].includes(String(row.voted ?? '').trim().toLowerCase());
-      rows.push(row);
-    });
-    if (!rows.length) return res.status(400).json({ message: 'No voter rows with an EPIC value were found.' });
-    if (rows.length > 50000) return res.status(413).json({ message: 'A workbook may contain at most 50,000 voter rows per import.' });
-
-    let inserted = 0;
-    let updated = 0;
-    await db.transaction(async (client) => {
-      for (const row of rows) {
-        const values = voterColumns.map((column) => row[column]);
-        values.push(organizationId);
-        const updates = voterColumns.slice(1).map((column) => `${column} = EXCLUDED.${column}`).join(', ');
-        const result = await client.query(`
-          INSERT INTO voters (${voterColumns.join(', ')}, organization_id)
-          VALUES (${voterColumns.map((_, index) => `$${index + 1}`).join(', ')}, $${values.length})
-          ON CONFLICT (organization_id, epic) DO UPDATE SET ${updates}
-          RETURNING (xmax = 0) AS inserted
-        `, values);
-        if (result.rows[0].inserted) inserted += 1;
-        else updated += 1;
-      }
-    });
-    res.json({ inserted, updated, total: rows.length });
+    addSheet(workbook, 'Voters', voters.map((v) => ({
+      'EPIC No': v.epic,
+      'Ward': v.wardNo,
+      'Part': v.partNo,
+      'Serial No': v.serialNo,
+      'Name (English)': v.nameEn,
+      'Name (Hindi)': v.nameHi,
+      'Age': v.age,
+      'Gender': v.gender,
+      'Relation': v.relationType,
+      'Relative Name (English)': v.relativeNameEn,
+      'Relative Name (Hindi)': v.relativeNameHi,
+      'House No': v.houseNo,
+      'Mobile': v.mobileNo,
+      'Caste': v.caste,
+      'Status': v.supportStatus,
+      'Voted': v.voted ? 'Yes' : 'No'
+    })));
+    await sendWorkbook(res, workbook, 'Voters_Export');
   } catch (err) {
-    if (err instanceof Error && /worksheet row/.test(err.message)) return res.status(400).json({ message: err.message });
-    console.error('Voter workbook import failed:', err.message);
-    res.status(500).json({ message: 'Voter workbook import failed; no rows were saved.' });
+    console.error('Export failed:', err.message);
+    if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
   }
 });
 
