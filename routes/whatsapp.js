@@ -45,21 +45,25 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
     });
     dispatchId = dispatch._id;
 
-    const messageText = `ग्राम पंचायत जेलातरा चुनाव 2026 — आपकी डिजिटल मतदाता सूचना पर्ची संलग्न है।
+    const voterName = dbVoter.nameHi || dbVoter.nameEn || '';
+    const ward = (dbVoter.wardNo || '').replace('वार्ड ', '');
+    const part = (dbVoter.partNo || '').replace('भाग ', '');
+    
+    const messageText = `नमस्कार,
 
-🗳️ मतदान हमारा अधिकार एवं कर्तव्य है। कृपया मतदान दिवस पर अपना पहचान पत्र (Voter ID / आधार कार्ड) साथ लाएं।
+${voterName} (वार्ड ${ward} · क्रम #${dbVoter.serialNo})
 
-📜 *मतदाता सूचना पर्ची · ग्राम पंचायत जेलातरा (जालोर)*
+मतदान केंद्र: ${part} - राजकीय उच्च माध्यमिक विधालय कमरा नंबर 1 जैलातरा
 
-📌 *वार्ड संख्या (Ward):* ${(dbVoter.wardNo || '').replace('वार्ड ', '')} | *भाग संख्या (Part):* ${(dbVoter.partNo || '').replace('भाग ', '')}
-📌 *क्रम संख्या (Serial No):* ${dbVoter.serialNo}
-👤 *नाम:* ${dbVoter.nameEn || ''} / ${dbVoter.nameHi || ''}
-👨‍👩‍👧 *${dbVoter.relationType || 'परिजन'}:* ${dbVoter.relativeNameEn || ''} / ${dbVoter.relativeNameHi || ''}
-🏠 *मकान नं.:* ${dbVoter.houseNo || ''} | 📅 *आयु:* ${dbVoter.age || ''} वर्ष, ${dbVoter.gender || ''}
-🆔 *पहचान पत्र (EPIC):* ${dbVoter.epic || ''}
+आपकी डिजिटल मतदाता सूचना पर्ची (Voter Slip) संलग्न है।
 
-🏫 *मतदान केंद्र:*
-${(dbVoter.partNo || '').replace('भाग ', '')} - राजकीय उच्च माध्यमिक विद्यालय, जैलातरा`;
+ग्राम पंचायत जेलातरा चुनाव 2026 — आपकी डिजिटल मतदाता सूचना पर्ची संलग्न है। 🗳️ मतदान हमारा अधिकार एवं कर्तव्य है। कृपया मतदान दिवस पर अपना पहचान पत्र (Voter ID / आधार कार्ड) साथ लाएं।
+
+Regards,
+
+ग्राम पंचायत जेलातरा
+
+Thank you for your valuable time and attention. 🙏`;
 
     const response = await axios.post(
       `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
