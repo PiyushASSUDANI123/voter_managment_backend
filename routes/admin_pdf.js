@@ -82,6 +82,7 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
       filename: req.file.originalname,
       organizationId: organizationId,
       status: 'processing',
+      progress: 0,
       extractedCount: 0,
       uploadedAt: new Date().toISOString()
     });
@@ -92,9 +93,15 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     // Process asynchronously
     (async () => {
       try {
+        const updateJobProgress = (prog) => {
+          uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: prog });
+        };
+        
+        updateJobProgress(10); // Start parsing PDF
         const dataBuffer = fs.readFileSync(filePath);
         const data = await pdfParse(dataBuffer);
         
+        updateJobProgress(40); // Parsing complete, starting extraction
         const text = data.text;
         const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2}\/\d{2}\/\d{3}\/\d{6}/gi;
         
@@ -112,6 +119,8 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
             epics.push(e);
           }
         }
+
+        updateJobProgress(50); // Regex search complete, building bulk operations
 
         // Extract common metadata (part no, ward no) if available
         const partMatch = text.match(/(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
@@ -173,20 +182,32 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
           };
         });
 
+        updateJobProgress(60); // Operations built, saving to database
+
         if (operations.length > 0) {
-          await Voter.bulkWrite(operations, { ordered: false });
+          const CHUNK_SIZE = 500;
+          let processed = 0;
+          for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
+            const chunk = operations.slice(i, i + CHUNK_SIZE);
+            await Voter.bulkWrite(chunk, { ordered: false });
+            processed += chunk.length;
+            const dbProgress = Math.floor((processed / operations.length) * 40); // up to 40%
+            updateJobProgress(60 + dbProgress);
+          }
         }
         
         uploadJobs.set(jobId, {
           ...uploadJobs.get(jobId),
           status: 'completed',
+          progress: 100,
           extractedCount: epics.length
         });
         console.log(`Background PDF processing complete for ${filePath}. Extracted ${epics.length} voters.`);
       } catch (bgError) {
         uploadJobs.set(jobId, {
           ...uploadJobs.get(jobId),
-          status: 'failed'
+          status: 'failed',
+          progress: 0
         });
         console.error(`Background PDF processing failed for ${filePath}:`, bgError);
       }
