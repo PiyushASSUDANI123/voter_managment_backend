@@ -67,6 +67,8 @@ exports.login = async (req, res) => {
     const payload = {
       user: {
         id: user._id,
+        email: user.email,
+        name: user.fullName || user.email,
         role: user.role,
         organizationId: user.organizationId,
         subRole: user.subRole || user.role,
