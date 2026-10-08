@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { verifyToken, isAdmin } = require('../middleware/authMiddleware');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
+const cache = require('../lib/cache');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -115,15 +116,21 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
 
 router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
   const params = [];
-  const filter = typeof req.query.organizationId === 'string' && req.query.organizationId.trim()
-    ? (params.push(req.query.organizationId.trim()), `WHERE organization_id = $${params.length}`)
+  const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+  const filter = orgId
+    ? (params.push(orgId), `WHERE organization_id = $${params.length}`)
     : '';
+    
+  const cacheKey = `master_data_${orgId || 'all'}`;
+  const cachedData = cache.get(cacheKey);
+  if (cachedData) return res.json(cachedData);
+
   try {
     const result = await db.query(
       `SELECT * FROM voters ${filter} ORDER BY ward_no ASC, part_no ASC, serial_no ASC LIMIT 1000`,
       params,
     );
-    res.json(result.rows.map((row) => ({
+    const data = result.rows.map((row) => ({
       _id: row.id, epic: row.epic, nameEn: row.name_en, nameHi: row.name_hi,
       relativeNameEn: row.relative_name_en, relativeNameHi: row.relative_name_hi,
       relationType: row.relation_type, age: row.age, gender: row.gender,
@@ -131,7 +138,9 @@ router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
       serialNo: row.serial_no, phone: row.phone, caste: row.caste,
       surety: row.surety, supportStatus: row.support_status, voted: row.voted,
       organizationId: row.organization_id,
-    })));
+    }));
+    cache.set(cacheKey, data);
+    res.json(data);
   } catch (err) {
     console.error('Master data query failed:', err.message);
     res.status(500).json({ message: 'Master data could not be loaded.' });

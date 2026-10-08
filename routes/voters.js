@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../db');
+const cache = require('../lib/cache');
 const { formatVoter } = require('./features');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
@@ -14,6 +15,14 @@ const boundedInteger = (value, fallback, maximum) => {
 router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 'warroom'), async (req, res) => {
   try {
     const { ward } = req.query;
+    const cacheKey = `voters_all_${req.user.organizationId}_${req.user.id}_${ward || 'all'}`;
+    
+    // Check Cache
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) {
+      return res.json(cachedData);
+    }
+
     const params = [];
     let access = addVoterAccess(req, params);
     
@@ -23,7 +32,12 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
     }
     
     const result = await db.query(`SELECT * FROM voters WHERE ${access} ORDER BY ward_no, part_no, serial_no`, params);
-    res.json(result.rows.map(formatVoter));
+    const data = result.rows.map(formatVoter);
+    
+    // Set Cache
+    cache.set(cacheKey, data);
+    
+    res.json(data);
   } catch (err) {
     console.error('Voter analytics query failed:', err.message);
     res.status(500).json({ message: 'Voter analytics could not be loaded.' });
@@ -33,7 +47,7 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
 // Get all voters (with search & pagination)
 router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'migrants'), async (req, res) => {
   try {
-    const { search, ward, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
+    const { search, relative, ward, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
     const params = [];
     const access = addVoterAccess(req, params);
     const clauses = [access];
@@ -46,6 +60,11 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
       params.push(`%${search.trim()}%`);
       const placeholder = `$${params.length}`;
       clauses.push(`(name_hi ILIKE ${placeholder} OR name_en ILIKE ${placeholder} OR epic ILIKE ${placeholder} OR relative_name_hi ILIKE ${placeholder} OR relative_name_en ILIKE ${placeholder})`);
+    }
+    if (typeof relative === 'string' && relative.trim()) {
+      params.push(`%${relative.trim()}%`);
+      const placeholder = `$${params.length}`;
+      clauses.push(`(relative_name_hi ILIKE ${placeholder} OR relative_name_en ILIKE ${placeholder})`);
     }
     if (typeof ward === 'string' && ward.trim()) add('ward_no ILIKE ?', `%${ward.trim()}%`);
     if (typeof house === 'string' && house.trim()) add('house_no ILIKE ?', `%${house.trim()}%`);
@@ -165,6 +184,12 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     params.push(id);
     const result = await db.query(`UPDATE voters SET voted = $1 WHERE ${access} AND id = $${params.length} RETURNING id`, params);
     if (!result.rowCount) return res.status(404).json({ message: 'Voter not found.' });
+    
+    // Invalidate Cache for this organization
+    const prefix = `voters_all_${req.user.organizationId}_`;
+    const keys = cache.keys();
+    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+    
     res.json({ success: true, message: 'Vote status updated.' });
   } catch (err) {
     console.error('Vote status update failed:', err.message);

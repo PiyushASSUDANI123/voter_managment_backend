@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const db = require('../db');
+const { User, Organization } = require('../models/index');
 
 exports.register = async (req, res) => {
   try {
@@ -10,14 +10,26 @@ exports.register = async (req, res) => {
       return res.status(400).json({ message: 'A valid email and a password of at least 8 characters are required.' });
     }
     const normalizedEmail = email.trim().toLowerCase();
+    
+    const existing = await User.findOne({ email: normalizedEmail });
+    if (existing) {
+      return res.status(409).json({ message: 'An account with this email already exists.' });
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
-    await db.query(
-      "INSERT INTO users (email, password, role, organization_id) VALUES ($1, $2, 'worker', $3)",
-      [normalizedEmail, passwordHash, req.user.organizationId || 'org_default']
-    );
+    const user = new User({
+      _id: 'user_' + Date.now(),
+      email: normalizedEmail,
+      passwordHash: passwordHash,
+      fullName: normalizedEmail.split('@')[0],
+      phone: '0000000000',
+      role: 'worker',
+      organizationId: req.user.organizationId || 'org_default'
+    });
+    
+    await user.save();
     res.status(201).json({ message: 'User registered successfully.' });
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ message: 'An account with this email already exists.' });
     console.error('Account registration failed:', err.message);
     res.status(500).json({ message: 'Account could not be registered.' });
   }
@@ -30,39 +42,38 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    // Check user
-    const userResult = await db.query(`
-      SELECT u.*, o.enabled_modules AS organization_modules, o.allowed_wards, o.is_active AS organization_active
-      FROM users u LEFT JOIN organizations o ON o.id = u.organization_id
-      WHERE u.email = $1
-    `, [email.trim().toLowerCase()]);
-    if (userResult.rows.length === 0) return res.status(400).json({ message: 'Invalid Credentials' });
+    // Check user and organization
+    const user = await User.findOne({ email: email.trim() });
+    if (!user) return res.status(400).json({ message: 'Invalid Credentials' });
     
-    const user = userResult.rows[0];
-    if (user.is_active === false || user.organization_active === false) {
+    const org = await Organization.findById(user.organizationId);
+    if (!org) return res.status(403).json({ message: 'Organization not found.' });
+    
+    if (user.isActive === false || org.isActive === false) {
       return res.status(403).json({ message: 'This account or organization has been disabled.' });
     }
 
     // Match password
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(password, user.passwordHash);
     if (!isMatch) return res.status(400).json({ message: 'Invalid Credentials' });
 
     // Generate token
     const enabledModules = user.role === 'admin'
       ? []
       : user.role === 'tenant_admin'
-        ? (user.organization_modules || [])
-        : (user.modules || []).filter((module) => (user.organization_modules || []).includes(module));
+        ? (org.enabledModules || [])
+        : (user.modules || []).filter((module) => (org.enabledModules || []).includes(module));
+        
     const payload = {
       user: {
-        id: user.id,
+        id: user._id,
         role: user.role,
-        organizationId: user.organization_id,
-        subRole: user.sub_role || user.role,
-        scopeType: user.scope_type || 'All',
-        scopeValue: user.scope_value || '',
+        organizationId: user.organizationId,
+        subRole: user.subRole || user.role,
+        scopeType: user.scopeType || 'All',
+        scopeValue: user.scopeValue || '',
         modules: enabledModules,
-        allowedWards: user.allowed_wards || [],
+        allowedWards: org.allowedWards || [],
       }
     };
 
@@ -75,15 +86,15 @@ exports.login = async (req, res) => {
         res.json({
           token,
           user: {
-            id: user.id,
+            id: user._id,
             email: user.email,
-            name: user.full_name || user.email,
+            name: user.fullName || user.email,
             role: user.role,
-            subRole: user.sub_role || user.role,
-            scope: user.scope_type || 'All',
-            scopeValue: user.scope_value || '',
+            subRole: user.subRole || user.role,
+            scope: user.scopeType || 'All',
+            scopeValue: user.scopeValue || '',
             modules: enabledModules,
-            allowedWards: user.allowed_wards || [],
+            allowedWards: org.allowedWards || [],
           },
         });
       }
@@ -102,21 +113,20 @@ exports.changePassword = async (req, res) => {
     }
 
     const userId = req.user.id;
-    const userResult = await db.query('SELECT password FROM users WHERE id = $1', [userId]);
+    const user = await User.findById(userId);
     
-    if (userResult.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({ message: 'User not found.' });
     }
 
-    const user = userResult.rows[0];
-    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    const isMatch = await bcrypt.compare(oldPassword, user.passwordHash);
     
     if (!isMatch) {
       return res.status(400).json({ message: 'Incorrect old password.' });
     }
 
-    const newPasswordHash = await bcrypt.hash(newPassword, 10);
-    await db.query('UPDATE users SET password = $1 WHERE id = $2', [newPasswordHash, userId]);
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    await user.save();
 
     res.json({ message: 'Password changed successfully.' });
   } catch (err) {

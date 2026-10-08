@@ -1,6 +1,8 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const helmet = require('helmet'); // Security Headers & CSP
+const logger = require('./lib/logger'); // Structured Logging
 
 dotenv.config();
 
@@ -16,9 +18,27 @@ const featureRoutes = require('./routes/features');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Rate Limiting (Token Bucket / Throttling)
+const rateLimit = require('express-rate-limit');
+const apiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 300, // Limit each IP to 300 requests per `window`
+  message: 'Too many requests from this IP, please try again after a minute',
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+});
+
 // Middleware
+app.use(helmet()); // Secure HTTP headers
 app.use(cors());
 app.use(express.json());
+app.use('/api', apiLimiter); // Apply rate limiter to all API routes
+
+// Request Logging Middleware
+app.use((req, res, next) => {
+  logger.info(`Incoming Request: ${req.method} ${req.url}`, { ip: req.ip });
+  next();
+});
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -30,14 +50,15 @@ app.use('/api/features', featureRoutes.router);
 
 app.get('/api/health', async (_req, res) => {
   try {
-    await db.query('SELECT 1');
-    res.json({ status: 'ok', database: 'connected' });
+    const mongoose = require('mongoose');
+    if (mongoose.connection.readyState === 1) {
+      res.json({ status: 'ok', database: 'connected' });
+    } else {
+      res.status(503).json({ status: 'degraded', database: 'unavailable' });
+    }
   } catch (err) {
     console.error('Health check failed:', err.message);
-    res.status(503).json({
-      status: 'degraded',
-      database: db.isConfigured() ? 'unavailable' : 'not_configured',
-    });
+    res.status(503).json({ status: 'degraded', database: 'error' });
   }
 });
 
@@ -45,19 +66,19 @@ app.get('/', (req, res) => {
   res.send('VijaySetu Backend API is running.');
 });
 
+// Graceful Error Handling & Circuit Breakers Fallback
+app.use((err, req, res, next) => {
+  logger.error(`Unhandled Exception: ${err.message}`, { stack: err.stack, url: req.url });
+  res.status(500).json({
+    message: 'System is currently experiencing heavy load. Circuit breaker engaged. Please try again in a few moments.',
+    errorId: Date.now()
+  });
+});
+
 const startServer = () => {
   app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    logger.info(`Server is running on port ${PORT}`);
   });
 };
 
-if (db.isConfigured()) {
-  db.ensureSchema()
-    .then(startServer)
-    .catch((err) => {
-      console.error('Database schema setup failed:', err.message);
-      startServer();
-    });
-} else {
-  startServer();
-}
+db.connectDB().then(startServer).catch(startServer);

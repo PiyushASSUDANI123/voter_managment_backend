@@ -92,32 +92,61 @@ router.get('/communities', requireModule('community'), async (req, res) => {
   const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
   if (!query) return res.status(400).json({ message: 'Enter a community or surname to search.' });
+  const terms = query.split(',').map((term) => term.trim()).filter(Boolean);
+  if (query.length > 500 || terms.length === 0 || terms.length > 12) {
+    return res.status(400).json({ message: 'Search up to 12 community names at a time.' });
+  }
+  const includeFamily = req.query.includeFamily !== 'false';
 
   try {
     const params = [];
     const access = addVoterAccess(req, params, 'v.');
-    params.push(`%${query}%`);
-    const queryParam = params.length;
+    const searchTerms = terms.map((term) => {
+      params.push(`%${term}%`);
+      return `$${params.length}`;
+    });
+    const matchExpression = searchTerms.map((placeholder) => `(
+      ${['caste', 'name_en', 'name_hi', 'relative_name_en', 'relative_name_hi']
+        .map((field) => `COALESCE(v.${field}, '') ILIKE ${placeholder}`)
+        .join(' OR ')}
+    )`).join(' OR ');
+    params.push(includeFamily);
+    const includeFamilyParam = params.length;
     params.push(ward ? `%${ward}%` : '');
     const wardParam = params.length;
     params.push(boundedNumber(req.query.limit, 100, 250));
     const limitParam = params.length;
     const result = await db.query(`
+      WITH matched AS (
+        SELECT v.id, v.family_id
+        FROM voters v
+        WHERE ${access}
+          AND (${matchExpression})
+          AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
+      )
       SELECT v.*,
-        COUNT(*) OVER (PARTITION BY v.ward_no, v.part_no, v.house_no)::integer AS household_count
+        COUNT(*) OVER (PARTITION BY v.ward_no, v.part_no, v.house_no)::integer AS household_count,
+        CASE WHEN EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
+          THEN 'direct' ELSE 'family' END AS match_type
       FROM voters v
       WHERE ${access}
-        AND (COALESCE(v.caste, '') ILIKE $${queryParam}
-          OR COALESCE(v.name_en, '') ILIKE $${queryParam}
-          OR COALESCE(v.name_hi, '') ILIKE $${queryParam}
-          OR COALESCE(v.relative_name_en, '') ILIKE $${queryParam}
-          OR COALESCE(v.relative_name_hi, '') ILIKE $${queryParam})
-        AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
+        AND (
+          EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
+          OR (
+            $${includeFamilyParam} = true
+            AND v.family_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM matched m WHERE m.family_id = v.family_id)
+          )
+        )
       ORDER BY v.ward_no, v.part_no, v.serial_no
       LIMIT $${limitParam}
     `, params);
 
-    res.json(result.rows.map((row) => ({ ...formatVoter(row), householdCount: row.household_count })));
+    res.json(result.rows.map((row) => ({
+      ...formatVoter(row),
+      householdCount: row.household_count,
+      matchType: row.match_type,
+    })));
   } catch (err) {
     console.error('Community search failed:', err.message);
     res.status(500).json({ message: 'Community search could not be completed.' });
@@ -243,7 +272,48 @@ router.get('/export.xlsx', async (req, res) => {
     const params = [];
     const voterAccess = addVoterAccess(req, params, 'v.');
     let result;
-    if (['voters', 'turnout', 'migrants', 'community'].includes(dataset)) {
+    if (dataset === 'community') {
+      const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+      const terms = query.split(',').map((term) => term.trim()).filter(Boolean);
+      if (!query || query.length > 500 || terms.length === 0 || terms.length > 12) {
+        return res.status(400).json({ message: 'Enter up to 12 community names to export.' });
+      }
+      const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
+      const includeFamily = req.query.includeFamily !== 'false';
+      const searchTerms = terms.map((term) => {
+        params.push(`%${term}%`);
+        return `$${params.length}`;
+      });
+      const matchExpression = searchTerms.map((placeholder) => `(
+        ${['caste', 'name_en', 'name_hi', 'relative_name_en', 'relative_name_hi']
+          .map((field) => `COALESCE(v.${field}, '') ILIKE ${placeholder}`)
+          .join(' OR ')}
+      )`).join(' OR ');
+      params.push(includeFamily);
+      const includeFamilyParam = params.length;
+      params.push(ward ? `%${ward}%` : '');
+      const wardParam = params.length;
+      result = await db.query(`
+        WITH matched AS (
+          SELECT v.id, v.family_id
+          FROM voters v
+          WHERE ${voterAccess}
+            AND (${matchExpression})
+            AND ($${wardParam} = '' OR v.ward_no ILIKE $${wardParam})
+        )
+        SELECT v.* FROM voters v
+        WHERE ${voterAccess}
+          AND (
+            EXISTS (SELECT 1 FROM matched m WHERE m.id = v.id)
+            OR (
+              $${includeFamilyParam} = true
+              AND v.family_id IS NOT NULL
+              AND EXISTS (SELECT 1 FROM matched m WHERE m.family_id = v.family_id)
+            )
+          )
+        ORDER BY v.ward_no, v.part_no, v.serial_no
+      `, params);
+    } else if (['voters', 'turnout', 'migrants'].includes(dataset)) {
       const predicates = [voterAccess];
       const search = typeof req.query.search === 'string' ? req.query.search.trim() : '';
       const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';

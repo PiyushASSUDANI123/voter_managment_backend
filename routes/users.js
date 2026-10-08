@@ -23,7 +23,7 @@ const selectAccounts = async (req, workersOnly) => {
   if (workersOnly) filters.push("u.role = 'worker'");
 
   const result = await db.query(`
-    SELECT u.id, u.email, u.full_name, u.phone, u.role, u.sub_role, u.scope_type,
+    SELECT u.id, u.email, u.full_name, u.phone, u.role AS account_type, u.sub_role, u.scope_type,
       u.scope_value, u.modules, u.is_active, u.organization_id, u.created_at,
       o.name AS organization_name,
       COUNT(v.id)::integer AS assigned_voters
@@ -40,6 +40,7 @@ const selectAccounts = async (req, workersOnly) => {
     email: row.email,
     name: row.full_name || '',
     phone: row.phone || '',
+    accountType: row.account_type,
     role: row.sub_role || 'Operator',
     scope: row.scope_type,
     scopeValue: row.scope_value || '',
