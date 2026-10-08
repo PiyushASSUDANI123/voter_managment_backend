@@ -2,7 +2,7 @@ const express = require('express');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
-const { Voter, Organization } = require('../models/index');
+const { Voter, Organization, SlipDispatch } = require('../models/index');
 
 const router = express.Router();
 
@@ -36,6 +36,8 @@ const boundedNumber = (value, fallback, maximum) => {
   const parsed = Number.parseInt(value, 10);
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 };
+
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 router.use(verifyToken);
 
@@ -243,13 +245,112 @@ router.get('/community', requireModule('community'), async (req, res) => {
   }
 });
 
+router.get('/dispatches', requireModule('history'), async (req, res) => {
+  try {
+    const query = {};
+    if (req.user.role !== 'admin') {
+      query.organizationId = req.user.organizationId || 'org_default';
+    } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
+      query.organizationId = req.query.organizationId.trim();
+    }
+
+    if (typeof req.query.search === 'string' && req.query.search.trim()) {
+      if (req.query.search.trim().length > 150) return res.status(400).json({ message: 'Search must be 150 characters or fewer.' });
+      const search = new RegExp(escapeRegex(req.query.search.trim()), 'i');
+      query.$or = [
+        { voterName: search },
+        { voterEpic: search },
+        { recipientPhone: search },
+      ];
+    }
+    if (typeof req.query.status === 'string' && req.query.status) {
+      if (!['sent', 'failed', 'sending'].includes(req.query.status)) {
+        return res.status(400).json({ message: 'Choose a valid dispatch status.' });
+      }
+      query.status = req.query.status;
+    }
+
+    const [dispatches, groupedCounts] = await Promise.all([
+      SlipDispatch.find(query).sort({ createdAt: -1 }).limit(500).lean(),
+      SlipDispatch.aggregate([{ $match: query }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+    ]);
+    const summary = { total: 0, sent: 0, failed: 0, sending: 0 };
+    for (const row of groupedCounts) {
+      summary.total += row.count;
+      if (['sent', 'failed', 'sending'].includes(row._id)) summary[row._id] = row.count;
+    }
+
+    res.json({
+      summary,
+      dispatches: dispatches.map((item) => ({
+        id: item._id,
+        voterName: item.voterName,
+        epic: item.voterEpic,
+        phone: item.recipientPhone,
+        slipType: item.slipType || 'individual',
+        status: item.status,
+        providerMessageId: item.providerMessageId || null,
+        errorMessage: item.errorMessage || '',
+        createdAt: item.createdAt,
+      })),
+    });
+  } catch (err) {
+    console.error('Dispatch history query failed:', err.message);
+    res.status(500).json({ message: 'Dispatch history could not be loaded.' });
+  }
+});
+
 router.get('/export.xlsx', async (req, res) => {
   try {
     const query = addVoterAccess(req);
     
     const dataset = req.query.dataset;
-    if (!['voters', 'turnout', 'migrants', 'community'].includes(dataset)) {
-      return res.status(400).json({ message: 'Invalid dataset requested.' });
+    const datasetModules = {
+      voters: ['voters'],
+      turnout: ['turnout', 'poll-desk'],
+      migrants: ['migrants'],
+      community: ['community'],
+      dispatches: ['history'],
+    };
+    const requiredModules = datasetModules[dataset];
+    if (!requiredModules) return res.status(400).json({ message: 'Invalid dataset requested.' });
+    if (req.user.role !== 'admin' && !requiredModules.some((module) => req.user.modules?.includes(module))) {
+      return res.status(403).json({ message: 'Your account does not have access to this export.' });
+    }
+
+    if (dataset === 'dispatches') {
+      const dispatchQuery = {};
+      if (req.user.role !== 'admin') {
+        dispatchQuery.organizationId = req.user.organizationId || 'org_default';
+      } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
+        dispatchQuery.organizationId = req.query.organizationId.trim();
+      }
+      if (typeof req.query.search === 'string' && req.query.search.trim()) {
+        const search = new RegExp(escapeRegex(req.query.search.trim()), 'i');
+        dispatchQuery.$or = [
+          { voterName: search },
+          { voterEpic: search },
+          { recipientPhone: search },
+        ];
+      }
+      if (typeof req.query.status === 'string' && req.query.status) {
+        if (!['sent', 'failed', 'sending'].includes(req.query.status)) {
+          return res.status(400).json({ message: 'Choose a valid dispatch status.' });
+        }
+        dispatchQuery.status = req.query.status;
+      }
+      const dispatches = await SlipDispatch.find(dispatchQuery).sort({ createdAt: -1 }).limit(5000).lean();
+      const workbook = createWorkbook();
+      addSheet(workbook, 'Dispatches', dispatches.map((item) => ({
+        'समय': item.createdAt,
+        'मतदाता': item.voterName,
+        'EPIC': item.voterEpic,
+        'फोन': item.recipientPhone,
+        'पर्ची प्रकार': item.slipType || 'individual',
+        'स्थिति': item.status,
+        'त्रुटि': item.errorMessage || '',
+      })));
+      return sendWorkbook(res, workbook, 'Dispatch_History');
     }
 
     if (dataset === 'migrants') {
@@ -280,7 +381,22 @@ router.get('/export.xlsx', async (req, res) => {
     const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
     if (ward) query.wardNo = new RegExp(ward, 'i');
 
-    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    let voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    if (dataset === 'community' && req.query.includeFamily !== 'false') {
+      const familyIds = [...new Set(voters.map((voter) => voter.familyId).filter(Boolean))];
+      if (familyIds.length) {
+        const familyQuery = addVoterAccess(req);
+        familyQuery.familyId = { $in: familyIds };
+        const familyVoters = await Voter.find(familyQuery).lean();
+        const voterMap = new Map(familyVoters.map((voter) => [voter._id.toString(), voter]));
+        voters.forEach((voter) => voterMap.set(voter._id.toString(), voter));
+        voters = [...voterMap.values()].sort((a, b) => {
+          if (a.wardNo !== b.wardNo) return (a.wardNo || '').localeCompare(b.wardNo || '');
+          if (a.partNo !== b.partNo) return (a.partNo || '').localeCompare(b.partNo || '');
+          return (a.serialNo || 0) - (b.serialNo || 0);
+        });
+      }
+    }
 
     const workbook = createWorkbook();
     addSheet(workbook, 'Export', voters.map((v) => ({

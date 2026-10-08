@@ -102,7 +102,7 @@ router.put('/profile', verifyToken, async (req, res) => {
     const user = await User.findByIdAndUpdate(req.user.id, {
       fullName: name.trim(),
       phone: phone.trim()
-    }, { new: true }).lean();
+    }, { returnDocument: 'after' }).lean();
     
     res.json({
       message: 'Profile updated successfully.',
@@ -144,10 +144,19 @@ router.post('/', verifyToken, isOrganizationAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Valid name, email, and an 8-character password are required.' });
     }
     
-    const orgId = orgFor(req);
+    const requestedOrganizationId = req.body.organizationId;
+    const orgId = isPlatformAdmin(req) && typeof requestedOrganizationId === 'string' && requestedOrganizationId.trim()
+      ? requestedOrganizationId.trim()
+      : orgFor(req);
     const org = await Organization.findById(orgId).lean();
-    
+
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+
     const accountRole = req.user.role === 'admin' ? (role === 'tenant_admin' ? 'tenant_admin' : 'worker') : 'worker';
+    if (accountRole === 'worker') {
+      const activeWorkers = await User.countDocuments({ organizationId: orgId, role: 'worker', isActive: true });
+      if (activeWorkers >= 10) return res.status(409).json({ message: 'This organization has reached its limit of 10 active workers.' });
+    }
     if (accountRole === 'worker' && !validateAccess(req.body, org.enabledModules || [])) {
       return res.status(400).json({ message: 'Invalid access parameters for worker.' });
     }
@@ -184,34 +193,63 @@ router.post('/', verifyToken, isOrganizationAdmin, async (req, res) => {
 router.put('/:id', verifyToken, isOrganizationAdmin, async (req, res) => {
   try {
     const orgId = orgFor(req);
-    const org = await Organization.findById(orgId).lean();
-    
+    const query = { _id: req.params.id, role: 'worker' };
+    if (!isPlatformAdmin(req)) query.organizationId = orgId;
+
+    const hasPassword = Object.hasOwn(req.body, 'password');
+    if (hasPassword && (typeof req.body.password !== 'string' || req.body.password.length < 8)) {
+      return res.status(400).json({ message: 'A password of at least 8 characters is required.' });
+    }
+
+    const hasAccessChanges = ['subRole', 'scope', 'scopeValue', 'modules'].some((key) => Object.hasOwn(req.body, key));
+    if (!hasAccessChanges && hasPassword) {
+      const passwordHash = await bcrypt.hash(req.body.password, 10);
+      const user = await User.findOneAndUpdate(query, { $set: { passwordHash } }, { returnDocument: 'after' });
+      if (!user) return res.status(404).json({ message: 'Account not found or access denied.' });
+      return res.json({ message: 'Account password updated successfully.' });
+    }
+
+    const existingAccount = await User.findOne(query).select('organizationId').lean();
+    if (!existingAccount) return res.status(404).json({ message: 'Account not found or access denied.' });
+    const org = await Organization.findById(existingAccount.organizationId).lean();
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
     if (!validateAccess(req.body, org.enabledModules || [])) {
       return res.status(400).json({ message: 'Invalid access parameters.' });
     }
 
     const { name, phone } = req.body;
-    
-    const query = { _id: req.params.id, role: 'worker' };
-    if (!isPlatformAdmin(req)) query.organizationId = orgId;
-    
     const update = {
       subRole: req.body.subRole,
       scopeType: req.body.scope,
       scopeValue: req.body.scope === 'All' ? null : req.body.scopeValue.trim(),
-      modules: req.body.modules
+      modules: req.body.modules,
     };
-    
     if (typeof name === 'string' && name.trim()) update.fullName = name.trim();
     if (typeof phone === 'string' && phone.trim()) update.phone = phone.trim();
+    if (hasPassword) update.passwordHash = await bcrypt.hash(req.body.password, 10);
 
-    const user = await User.findOneAndUpdate(query, { $set: update }, { new: true });
-    
+    const user = await User.findOneAndUpdate(query, { $set: update }, { returnDocument: 'after' });
     if (!user) return res.status(404).json({ message: 'Account not found or access denied.' });
     res.json({ message: 'Account updated successfully.' });
   } catch (err) {
     console.error('Account update failed:', err.message);
     res.status(500).json({ message: 'Could not update account.' });
+  }
+});
+
+router.put('/:id/active', verifyToken, isOrganizationAdmin, async (req, res) => {
+  try {
+    if (req.body.isActive !== false) {
+      return res.status(400).json({ message: 'Only account deactivation is supported by this action.' });
+    }
+    const query = { _id: req.params.id, role: 'worker' };
+    if (!isPlatformAdmin(req)) query.organizationId = orgFor(req);
+    const user = await User.findOneAndUpdate(query, { $set: { isActive: false } }, { returnDocument: 'after' });
+    if (!user) return res.status(404).json({ message: 'Account not found or access denied.' });
+    res.json({ message: 'Account disabled successfully.' });
+  } catch (err) {
+    console.error('Account deactivation failed:', err.message);
+    res.status(500).json({ message: 'Could not disable account.' });
   }
 });
 

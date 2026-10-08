@@ -1,46 +1,47 @@
+const crypto = require('node:crypto');
 const mongoose = require('mongoose');
 const { Organization, User } = require('./models/index');
 const bcrypt = require('bcryptjs');
 
 const ensureSchema = async () => {
   try {
-    // Check and insert default organization
-    let defaultOrg = await Organization.findById('org_default');
-    if (!defaultOrg) {
-      await Organization.create({
-        _id: 'org_default',
+    await Organization.findByIdAndUpdate('org_default', {
+      $setOnInsert: {
         name: 'Default Organization',
-        enabledModules: ["voters","poll-desk","turnout","warroom","history","community","workers","migrants","accounts"],
-        isActive: true
-      });
-      console.log('✅ Created Default Organization');
-    }
+        enabledModules: ['voters', 'poll-desk', 'turnout', 'warroom', 'history', 'community', 'workers', 'migrants', 'accounts'],
+        isActive: true,
+      },
+    }, { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true });
 
-    // Seed Admins requested by user
-    const pwd1 = await bcrypt.hash('9413879444', 10);
-    const pwd2 = await bcrypt.hash('Moxrathore@123456&qwerty', 10);
-    
-    await User.findOneAndUpdate(
-      { email: 'piyushassudani' },
-      { 
-        $setOnInsert: { _id: 'user_piyush_' + Date.now(), fullName: 'Piyush Assudani', phone: '9413879444', organizationId: 'org_default' },
-        $set: { role: 'admin', passwordHash: pwd1, isActive: true }
-      },
-      { upsert: true }
-    );
-    
-    await User.findOneAndUpdate(
-      { email: 'Moxrathore' },
-      { 
-        $setOnInsert: { _id: 'user_mox_' + Date.now(), fullName: 'Mox Rathore', phone: '0000000000', organizationId: 'org_default' },
-        $set: { role: 'admin', passwordHash: pwd2, isActive: true }
-      },
-      { upsert: true }
-    );
-    
-    console.log('✅ Admins seeded successfully in MongoDB');
-  } catch(e) {
-    console.error('❌ Failed to seed schemas:', e);
+    const bootstrapEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+    const bootstrapPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+    const bootstrapName = process.env.BOOTSTRAP_ADMIN_NAME?.trim();
+    const bootstrapPhone = process.env.BOOTSTRAP_ADMIN_PHONE?.trim();
+    const bootstrapConfigured = [bootstrapEmail, bootstrapPassword, bootstrapName, bootstrapPhone].some(Boolean);
+
+    if (bootstrapConfigured) {
+      if (!bootstrapEmail || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(bootstrapEmail)
+        || !bootstrapPassword || bootstrapPassword.length < 12 || !bootstrapName || !bootstrapPhone) {
+        throw new Error('All bootstrap admin settings are required; use a valid email and a password of at least 12 characters.');
+      }
+
+      const existingAdmin = await User.findOne({ email: bootstrapEmail });
+      if (!existingAdmin) {
+        await User.create({
+          _id: `user_${crypto.randomUUID()}`,
+          email: bootstrapEmail,
+          passwordHash: await bcrypt.hash(bootstrapPassword, 12),
+          fullName: bootstrapName,
+          phone: bootstrapPhone,
+          role: 'admin',
+          organizationId: 'org_default',
+          isActive: true,
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Database initialization failed:', err.message);
+    throw err;
   }
 };
 

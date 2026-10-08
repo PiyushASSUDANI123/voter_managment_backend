@@ -29,8 +29,7 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Partial Index: Fast lookup for active users within an organization
-userSchema.index({ organizationId: 1 }, { partialFilterExpression: { isActive: true } });
+// Partial Index removed to avoid duplicates since organizationId already has index: true
 
 const voterSchema = new mongoose.Schema({
   _id: { type: String, required: true },
@@ -49,9 +48,13 @@ const voterSchema = new mongoose.Schema({
   houseNoHi: { type: String },
   mobileNo: { type: String },
   caste: { type: String },
-  supportStatus: { type: String, default: 'unknown' },
+  supportStatus: { type: String, default: 'unmarked' },
   voted: { type: Boolean, default: false },
   votedAt: { type: Date, default: null },
+  surety: { type: String },
+  notes: { type: String },
+  isMigrant: { type: Boolean, default: false },
+  migrantLocation: { type: String },
   assignedWorker: { type: String, default: null },
   villageName: { type: String },
   villageNameHi: { type: String },
@@ -67,9 +70,6 @@ voterSchema.index({ organizationId: 1, wardNo: 1 });
 voterSchema.index({ organizationId: 1, familyId: 1 });
 voterSchema.index({ organizationId: 1, epic: 1 });
 
-// 🚀 Performance Optimization: Partial Index (Only index voters who have voted)
-voterSchema.index({ organizationId: 1, wardNo: 1 }, { partialFilterExpression: { voted: true } });
-
 // 🚀 Performance Optimization: Text Search Index
 // Enables fast text searching across multiple name fields (English & Hindi)
 voterSchema.index(
@@ -83,7 +83,10 @@ const slipDispatchSchema = new mongoose.Schema({
   voterEpic: { type: String, required: true },
   voterName: { type: String, required: true },
   recipientPhone: { type: String, required: true },
+  slipType: { type: String, enum: ['individual', 'family'], default: 'individual' },
   status: { type: String, required: true },
+  providerMessageId: { type: String, default: null },
+  errorMessage: { type: String, default: null },
   organizationId: { type: String, required: true, index: true },
   createdAt: { type: Date, default: Date.now }
 });

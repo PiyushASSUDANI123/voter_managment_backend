@@ -160,7 +160,7 @@ router.put('/:id', verifyToken, (req, res, next) => {
       query._id = id;
     }
     
-    const voter = await Voter.findOneAndUpdate(query, { $set: updates }, { new: true }).lean();
+    const voter = await Voter.findOneAndUpdate(query, { $set: updates }, { returnDocument: 'after' }).lean();
     
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
     res.json(voter);
@@ -187,7 +187,7 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
       query._id = id;
     }
     
-    const voter = await Voter.findOneAndUpdate(query, { $set: { voted } }, { new: true });
+    const voter = await Voter.findOneAndUpdate(query, { $set: { voted } }, { returnDocument: 'after' });
     
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
     

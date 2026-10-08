@@ -272,7 +272,37 @@ router.get('/system-health', verifyToken, isAdmin, async (_req, res) => {
   const metaReady = Boolean(process.env.META_WHATSAPP_TOKEN?.trim()
     && process.env.META_PHONE_ID?.trim()
     && process.env.META_GRAPH_API_VERSION?.trim());
-  res.json({ database, metaReady, platform: 'MongoDB' });
+  res.json({ database, metaReady, platform: 'MongoDB', checkedAt: new Date().toISOString() });
+});
+
+router.get('/import-template.xlsx', verifyToken, isAdmin, async (_req, res) => {
+  try {
+    const workbook = createWorkbook();
+    addSheet(workbook, 'Voters', [{
+      'EPIC No': '',
+      Ward: '',
+      Part: '',
+      'Serial No': '',
+      'Name (English)': '',
+      'Name (Hindi)': '',
+      Age: '',
+      Gender: '',
+      Relation: '',
+      'Relative Name (English)': '',
+      'Relative Name (Hindi)': '',
+      'House No': '',
+      'House No (Hindi)': '',
+      Mobile: '',
+      Caste: '',
+      'Family ID': '',
+      Village: '',
+      'Village (Hindi)': '',
+    }]);
+    await sendWorkbook(res, workbook, 'voter-import-template');
+  } catch (err) {
+    console.error('Voter import template generation failed:', err.message);
+    if (!res.headersSent) res.status(500).json({ message: 'Import template could not be generated.' });
+  }
 });
 
 router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async (req, res) => {
@@ -280,30 +310,39 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
   const organizationId = typeof req.body.organizationId === 'string' && req.body.organizationId.trim()
     ? req.body.organizationId.trim()
     : 'org_default';
+  if (!await Organization.exists({ _id: organizationId })) {
+    return res.status(404).json({ message: 'Organization not found.' });
+  }
 
   const parseRow = (row) => {
-    const rowValues = row.values;
-    if (!rowValues || rowValues.length < 5) return null; // Minimum expected columns
-    return {
-      epic: String(rowValues[1] || '').trim().toUpperCase(),
-      wardNo: String(rowValues[2] || '').trim(),
-      partNo: String(rowValues[3] || '').trim(),
-      serialNo: parseInt(rowValues[4], 10),
-      nameEn: String(rowValues[5] || '').trim(),
-      nameHi: String(rowValues[6] || '').trim(),
-      age: parseInt(rowValues[7], 10) || null,
-      gender: String(rowValues[8] || '').trim(),
-      relationType: String(rowValues[9] || '').trim(),
-      relativeNameEn: String(rowValues[10] || '').trim(),
-      relativeNameHi: String(rowValues[11] || '').trim(),
-      houseNo: String(rowValues[12] || '').trim(),
-      houseNoHi: String(rowValues[13] || '').trim(),
-      mobileNo: String(rowValues[14] || '').trim(),
-      caste: String(rowValues[15] || '').trim(),
-      familyId: String(rowValues[16] || '').trim(),
-      villageName: String(rowValues[17] || '').trim(),
+    const cellText = (column) => {
+      const value = row.getCell(column).text || row.getCell(column).value;
+      return value == null ? '' : String(value).trim();
+    };
+    const voter = {
+      epic: cellText(1).toUpperCase(),
+      wardNo: cellText(2),
+      partNo: cellText(3),
+      serialNo: Number(cellText(4)),
+      nameEn: cellText(5),
+      nameHi: cellText(6),
+      age: Number(cellText(7)) || null,
+      gender: cellText(8),
+      relationType: cellText(9),
+      relativeNameEn: cellText(10),
+      relativeNameHi: cellText(11),
+      houseNo: cellText(12),
+      houseNoHi: cellText(13),
+      mobileNo: cellText(14),
+      caste: cellText(15),
+      familyId: cellText(16),
+      villageName: cellText(17),
+      villageNameHi: cellText(18),
       organizationId,
     };
+    if (!voter.epic || !voter.wardNo || !voter.partNo || !Number.isInteger(voter.serialNo)
+      || voter.serialNo < 1 || !voter.nameEn || !voter.nameHi) return null;
+    return voter;
   };
 
   try {
@@ -312,44 +351,38 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     const worksheet = workbook.worksheets[0];
     if (!worksheet) return res.status(400).json({ message: 'The uploaded Excel file has no worksheets.' });
 
-    let rowsProcessed = 0;
-    const batchSize = 1000;
-    let batch = [];
-    
+    const batch = [];
     worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return; // Skip header
+      if (rowNumber === 1) return;
       const voter = parseRow(row);
-      if (voter && voter.epic && voter.wardNo && voter.partNo && !isNaN(voter.serialNo)) {
-        batch.push(voter);
-      }
+      if (voter) batch.push(voter);
     });
 
     if (batch.length === 0) return res.status(400).json({ message: 'No valid voter records found in file.' });
-    
-    // Clear old records for this org to simulate SQL UPSERT or fresh start
-    // If we are appending, we could use upsert. Here we insert fresh if asked.
-    // We'll use insertMany with ordered: false to skip duplicates
-    
-    try {
-      await Voter.insertMany(batch, { ordered: false });
-      rowsProcessed = batch.length;
-    } catch (e) {
-      // If there are duplicate epics, it throws but still inserts valid ones
-      if (e.code === 11000) {
-        rowsProcessed = e.insertedDocs?.length || 0;
-      } else {
-        throw e;
-      }
-    }
-    
+
+    const uniqueBatch = [...new Map(batch.map((voter) => [voter.epic, voter])).values()];
+    const result = await Voter.bulkWrite(uniqueBatch.map((voter) => ({
+      updateOne: {
+        filter: { organizationId, epic: voter.epic },
+        update: {
+          $set: voter,
+          $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
+        },
+        upsert: true,
+      },
+    })), { ordered: false });
+    const inserted = result.upsertedCount || 0;
+    const updated = result.matchedCount || 0;
+
     // Clear cache
     const keys = cache.keys();
     keys.forEach(k => cache.del(k));
 
     res.json({
       success: true,
-      message: `File uploaded successfully. Processed ${rowsProcessed} valid rows.`,
-      count: rowsProcessed
+      inserted,
+      updated,
+      count: inserted + updated,
     });
   } catch (err) {
     console.error('Excel processing error:', err);
@@ -378,10 +411,20 @@ router.get('/export-voters', verifyToken, isAdmin, async (req, res) => {
       'Relative Name (English)': v.relativeNameEn,
       'Relative Name (Hindi)': v.relativeNameHi,
       'House No': v.houseNo,
+      'House No (Hindi)': v.houseNoHi,
       'Mobile': v.mobileNo,
       'Caste': v.caste,
-      'Status': v.supportStatus,
-      'Voted': v.voted ? 'Yes' : 'No'
+      'Family ID': v.familyId,
+      'Village': v.villageName,
+      'Village (Hindi)': v.villageNameHi,
+      'Surety': v.surety,
+      'Notes': v.notes,
+      'Migrant': v.isMigrant ? 'Yes' : 'No',
+      'Migrant Location': v.migrantLocation,
+      'Assigned Worker': v.assignedWorker,
+      'Support Status': v.supportStatus,
+      'Voted': v.voted ? 'Yes' : 'No',
+      'Voted At': v.votedAt
     })));
     await sendWorkbook(res, workbook, 'Voters_Export');
   } catch (err) {

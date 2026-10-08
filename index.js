@@ -81,4 +81,13 @@ const startServer = () => {
   });
 };
 
-db.connectDB().then(startServer).catch(startServer);
+if (require.main === module) {
+  db.connectDB()
+    .then(() => startServer())
+    .catch((err) => {
+      logger.error('Database startup failed', { message: err.message });
+      process.exitCode = 1;
+    });
+}
+
+module.exports = { app, startServer };
