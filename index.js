@@ -47,6 +47,7 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/features', featureRoutes.router);
+app.use('/api/admin/pdf', require('./routes/admin_pdf'));
 
 app.get('/api/health', async (_req, res) => {
   try {

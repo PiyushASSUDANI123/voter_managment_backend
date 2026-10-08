@@ -27,6 +27,7 @@
     "mongoose": "^9.11.1",
     "multer": "^2.4.0",
     "node-cache": "^5.1.2",
+    "node-cron": "^4.6.0",
     "pdf-parse": "^2.4.5",
     "pg": "^8.23.1",
     "winston": "^3.19.0"
