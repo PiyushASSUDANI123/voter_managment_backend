@@ -23,7 +23,7 @@ const selectAccounts = async (req, workersOnly) => {
     query.role = 'worker';
   } else {
     // Only fetch non-admin users for tenant viewing
-    query._id = { $ne: req.user.id };
+    query.role = { $ne: 'admin' };
   }
 
   const users = await User.find(query).sort({ createdAt: -1 }).lean();
