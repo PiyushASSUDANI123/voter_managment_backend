@@ -19,7 +19,7 @@ const userSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   fullName: { type: String, required: true },
   phone: { type: String, required: true },
-  role: { type: String, required: true }, // admin, tenant_admin, worker
+  role: { type: String, required: true },
   subRole: { type: String, default: null },
   scopeType: { type: String, default: null },
   scopeValue: { type: String, default: null },
@@ -97,14 +97,27 @@ const slipDispatchSchema = new mongoose.Schema({
 
 slipDispatchSchema.index({ organizationId: 1, createdAt: -1 });
 
+const leadSchema = new mongoose.Schema({
+  _id: { type: String, required: true },
+  name: { type: String, required: true },
+  phone: { type: String, required: true },
+  constituency: { type: String, default: '' },
+  electionType: { type: String, default: 'विधानसभा (Assembly)' },
+  status: { type: String, enum: ['new', 'contacted', 'converted', 'closed'], default: 'new' },
+  notes: { type: String, default: '' },
+  createdAt: { type: Date, default: Date.now, index: true }
+});
+
 const Organization = mongoose.model('Organization', organizationSchema);
 const User = mongoose.model('User', userSchema);
 const Voter = mongoose.model('Voter', voterSchema);
 const SlipDispatch = mongoose.model('SlipDispatch', slipDispatchSchema);
+const Lead = mongoose.model('Lead', leadSchema);
 
 module.exports = {
   Organization,
   User,
   Voter,
-  SlipDispatch
+  SlipDispatch,
+  Lead
 };

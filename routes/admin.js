@@ -4,7 +4,7 @@ const multer = require('multer');
 const ExcelJS = require('exceljs');
 const bcrypt = require('bcryptjs');
 const mongoose = require('mongoose');
-const { Organization, User, Voter } = require('../models/index');
+const { Organization, User, Voter, Lead } = require('../models/index');
 const { verifyToken, isAdmin } = require('../middleware/authMiddleware');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
 const cache = require('../lib/cache');
@@ -525,6 +525,87 @@ router.get('/export-voters', verifyToken, isAdmin, async (req, res) => {
   } catch (err) {
     console.error('Export failed:', err.message);
     if (!res.headersSent) res.status(500).json({ message: 'Export failed' });
+  }
+});
+
+// ==========================================
+// WEBSITE LEADS / INQUIRIES MANAGEMENT
+// ==========================================
+
+// Public endpoint for website demo form submissions
+router.post('/leads', async (req, res) => {
+  try {
+    const { name, phone, constituency, electionType, notes } = req.body;
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ message: 'नाम आवश्यक है।' });
+    }
+    if (!phone || typeof phone !== 'string' || !phone.trim()) {
+      return res.status(400).json({ message: 'मोबाइल नंबर आवश्यक है।' });
+    }
+
+    const lead = await Lead.create({
+      _id: `lead_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      name: name.trim(),
+      phone: phone.trim(),
+      constituency: (constituency || '').trim(),
+      electionType: (electionType || 'विधानसभा (Assembly)').trim(),
+      notes: (notes || '').trim(),
+      status: 'new',
+      createdAt: new Date()
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'लीड सफलतापूर्वक दर्ज कर ली गई है।',
+      leadId: lead._id
+    });
+  } catch (err) {
+    console.error('Failed to save lead:', err.message);
+    res.status(500).json({ message: 'लीड सेव करने में त्रुटि आई।' });
+  }
+});
+
+// Admin-only: Fetch all website demo leads
+router.get('/leads', verifyToken, isAdmin, async (_req, res) => {
+  try {
+    const leads = await Lead.find({}).sort({ createdAt: -1 }).lean();
+    res.json(leads);
+  } catch (err) {
+    console.error('Failed to fetch leads:', err.message);
+    res.status(500).json({ message: 'लीड्स लोड नहीं हो सकीं।' });
+  }
+});
+
+// Admin-only: Update lead status or notes
+router.patch('/leads/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const updates = {};
+    if (status) updates.status = status;
+    if (typeof notes === 'string') updates.notes = notes;
+
+    const updated = await Lead.findByIdAndUpdate(id, { $set: updates }, { returnDocument: 'after' }).lean();
+    if (!updated) return res.status(404).json({ message: 'लीड नहीं मिली।' });
+
+    res.json({ success: true, lead: updated });
+  } catch (err) {
+    console.error('Failed to update lead:', err.message);
+    res.status(500).json({ message: 'लीड अपडेट करने में त्रुटि आई।' });
+  }
+});
+
+// Admin-only: Delete lead
+router.delete('/leads/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Lead.findByIdAndDelete(id).lean();
+    if (!deleted) return res.status(404).json({ message: 'लीड नहीं मिली।' });
+
+    res.json({ success: true, message: 'लीड सफलतापूर्वक डिलीट कर दी गई।' });
+  } catch (err) {
+    console.error('Failed to delete lead:', err.message);
+    res.status(500).json({ message: 'लीड डिलीट करने में त्रुटि आई।' });
   }
 });
 

@@ -218,17 +218,84 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     res.status(500).json({ message: 'Vote status could not be updated.' });
   }
 });
-// EXPLICIT CLIENT PROTECTION: Clients cannot delete or bulk upload voter records
-router.delete('*', verifyToken, (req, res) => {
-  return res.status(403).json({
-    message: 'क्लाइंट्स को डेटा डिलीट करने की अनुमति नहीं है। आप केवल डेटा देख व एडिट कर सकते हैं।'
-  });
+// DELETE single voter (Admin Only)
+router.delete('/:id', verifyToken, async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({
+        message: 'क्लाइंट्स को डेटा डिलीट करने की अनुमति नहीं है। यह अधिकार केवल सुपर एडमिन के पास है।'
+      });
+    }
+
+    const { id } = req.params;
+    const query = addVoterAccess(req);
+    if (!isNaN(id)) {
+      query.sqlId = Number.parseInt(id, 10);
+    } else {
+      query._id = id;
+    }
+
+    const deleted = await Voter.findOneAndDelete(query);
+    if (!deleted) {
+      return res.status(404).json({ message: 'मतदाता नहीं मिला या पहले ही डिलीट हो चुका है।' });
+    }
+
+    // Invalidate Cache for this organization
+    const prefix = `voters_all_${req.user.organizationId}_`;
+    const keys = cache.keys();
+    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+
+    res.json({ success: true, message: 'मतदाता सफलतापूर्वक डिलीट कर दिया गया।' });
+  } catch (err) {
+    console.error('Voter deletion failed:', err.message);
+    res.status(500).json({ message: 'डेटा डिलीट करने में त्रुटि आई।' });
+  }
 });
 
-router.post('*', verifyToken, (req, res) => {
-  return res.status(403).json({
-    message: 'क्लाइंट्स को नया डेटा अपलोड करने की अनुमति नहीं है। नया डेटा केवल सुपर एडमिन द्वारा अपलोड किया जा सकता है। आप केवल डेटा देख व एडिट कर सकते हैं।'
-  });
+// BULK DELETE voters (Admin Only)
+router.post('/bulk-delete', verifyToken, async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({
+        message: 'क्लाइंट्स को डेटा डिलीट करने की अनुमति नहीं है। यह अधिकार केवल सुपर एडमिन के पास है।'
+      });
+    }
+
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'डिलीट करने के लिए मतदाता IDs आवश्यक हैं।' });
+    }
+
+    const query = addVoterAccess(req);
+    query._id = { $in: ids };
+
+    const result = await Voter.deleteMany(query);
+
+    // Invalidate Cache for this organization
+    const prefix = `voters_all_${req.user.organizationId}_`;
+    const keys = cache.keys();
+    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+
+    res.json({ success: true, message: `${result.deletedCount} मतदाता सफलतापूर्वक डिलीट कर दिए गए।`, deletedCount: result.deletedCount });
+  } catch (err) {
+    console.error('Bulk voter deletion failed:', err.message);
+    res.status(500).json({ message: 'डेटा डिलीट करने में त्रुटि आई।' });
+  }
+});
+
+// EXPLICIT CLIENT PROTECTION: Catch-all for clients trying to delete or post
+router.use((req, res, next) => {
+  if (req.method === 'DELETE') {
+    return res.status(403).json({
+      message: 'क्लाइंट्स को डेटा डिलीट करने की अनुमति नहीं है। आप केवल डेटा देख व एडिट कर सकते हैं।'
+    });
+  }
+  if (req.method === 'POST') {
+    return res.status(403).json({
+      message: 'क्लाइंट्स को नया डेटा अपलोड करने की अनुमति नहीं है। नया डेटा केवल सुपर एडमिन द्वारा अपलोड किया जा सकता है। आप केवल डेटा देख व एडिट कर सकते हैं।'
+    });
+  }
+  next();
 });
 
 module.exports = router;
