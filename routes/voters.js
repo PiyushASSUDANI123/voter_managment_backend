@@ -152,8 +152,16 @@ router.put('/:id', verifyToken, (req, res, next) => {
     const updates = {};
     for (const [key, dbColumn] of Object.entries(columns)) {
       if (Object.hasOwn(req.body, key)) {
-        if (key === 'age' || key === 'serialNo') {
-          updates[dbColumn] = req.body[key] ? Number(req.body[key]) : null;
+        if (key === 'age') {
+          const numAge = Number.parseInt(req.body[key], 10);
+          updates[dbColumn] = !isNaN(numAge) && numAge >= 18 && numAge <= 125 ? numAge : null;
+        } else if (key === 'serialNo') {
+          const numSerial = Number.parseInt(req.body[key], 10);
+          updates[dbColumn] = !isNaN(numSerial) && numSerial > 0 ? numSerial : null;
+        } else if (key === 'nameHi' && typeof req.body[key] === 'string') {
+          updates[dbColumn] = req.body[key].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
+        } else if (key === 'relativeNameHi' && typeof req.body[key] === 'string') {
+          updates[dbColumn] = req.body[key].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
         } else {
           updates[dbColumn] = req.body[key];
         }

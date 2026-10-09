@@ -59,15 +59,19 @@ def clean_hindi_name(raw: str) -> str:
         return ""
     n = raw.strip()
     
-    # Strip leading non-Devanagari non-word symbols
-    n = re.sub(r'^[^\u0900-\u097F\w]+', '', n)
+    # Strictly remove English / Latin characters (English not permitted in Hindi name)
+    n = re.sub(r'[a-zA-Z]+', '', n)
     
-    # Noise suffixes to strip repeatedly
+    # Strictly remove digits (numbers not permitted in name)
+    n = re.sub(r'[\d\u0966-\u096F]+', '', n)
+    
+    # Strip leading non-Devanagari characters
+    n = re.sub(r'^[^\u0900-\u097F]+', '', n)
+    
+    # Noise suffixes and field label bleed
     noise_suffixes = [
         r'[\s\|\[\]\(\)\/\\_\-=~:;!\?*&«»®©\{\}\'\"\‘\’\`\.\,\^°+।॥]+$',
-        r'[\s\.\,]+[\u0966-\u096F0-9]+$',
-        r'\s+[a-zA-Z0-9]{1,4}$',
-        r'\s+(?:नाम|पिता|पति|माता|पित|मका|मकान|आयु|लिंग|है|हे|कै|ब्|र्|न्|न|प|व|f|ih|i\s*f|A|SS\s*I|RR)$'
+        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|पित|मका|मकान|गृह|आयु|उम्र|लिंग|है|हे|कै|ब्|र्|म्|न्|न|प|व|क)$'
     ]
     
     changed = True
@@ -93,6 +97,9 @@ def clean_hindi_name(raw: str) -> str:
 
     # Normalize common OCR typos in Devanagari
     n = re.sub(r'लालन$', 'लाल', n)
+    
+    # Strictly allow ONLY Devanagari characters and single spaces
+    n = re.sub(r'[^\u0900-\u097F\s]', '', n)
     return re.sub(r'\s+', ' ', n).strip()
 
 
@@ -100,13 +107,12 @@ def clean_house_no(raw: str) -> str:
     if not raw:
         return ""
     cleaned = normalize_numerals(raw.strip())
-    # Strip non-alphanumeric leading
-    cleaned = re.sub(r'^[^\w\u0900-\u097F]+', '', cleaned)
-    # Strip trailing punctuation & OCR bleed noise
-    cleaned = re.sub(r'[\s\|\[\]\(\)\/\\_\-=~:;!\?*&\{\}\'\"\‘\’\`\.\,]+$', '', cleaned)
-    cleaned = re.sub(r'(?:पु|पुरूष|पुरुष|स्त्री|महिला|मका|मकान|आयु|लिंग|है|हे|र्|म्| हे|ft|at|et|Fy|Ik|iad)+$', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[\s\|\[\]\(\)\/\\_\-=~:;!\?*&\{\}\'\"\‘\’\`\.\,]+$', '', cleaned)
-    return re.sub(r'\s+', '', cleaned).strip()
+    # Strip any text labels or word bleed (no textual noise allowed in numeric/house fields)
+    cleaned = re.sub(r'(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे)+', '', cleaned, flags=re.IGNORECASE)
+    # Strip unwanted symbols, keeping only alphanumeric and separator slashes/dashes
+    cleaned = re.sub(r'[^\w\d\/\-]', '', cleaned)
+    cleaned = re.sub(r'^[\/\-]+|[\/\-]+$', '', cleaned)
+    return cleaned.strip()
 
 
 def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[str, Any]:

@@ -159,22 +159,31 @@ const ExcelJS = require('exceljs');
         for (const line of lines) {
           if (/^(?:मतदाता का नाम|नाम)\s*[:ः\-]\s*(.+)/i.test(line) && !/क्षेत्र|संख्या एवं|विधानसभा/i.test(line)) {
             const m = line.match(/^(?:मतदाता का नाम|नाम)\s*[:ः\-]\s*(.+)/i);
-            if (m && !nameHi) nameHi = m[1].trim();
+            if (m && !nameHi) {
+              nameHi = m[1].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
+            }
           }
           if (/^(?:(पिता|पति|माता|अन्य)\s*का\s*नाम)\s*[:ः\-]\s*(.+)/i.test(line)) {
             const m = line.match(/^(?:(पिता|पति|माता|अन्य)\s*का\s*नाम)\s*[:ः\-]\s*(.+)/i);
             if (m && !relativeNameHi) {
               relationType = m[1];
-              relativeNameHi = m[2].trim();
+              relativeNameHi = m[2].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
             }
           }
           if (/^(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)/i.test(line)) {
             const m = line.match(/^(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)/i);
-            if (m && !houseNo) houseNo = m[1].trim();
+            if (m && !houseNo) {
+              houseNo = m[1].replace(/(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति)+/gi, '').replace(/[^\w\d\/\-]/g, '').trim();
+            }
           }
           if (/आयु\s*[:ः\-]?\s*(\d+)/i.test(line)) {
             const m = line.match(/आयु\s*[:ः\-]?\s*(\d+)/i);
-            if (m && age === null) age = parseInt(m[1]);
+            if (m && age === null) {
+              const parsedAge = parseInt(m[1], 10);
+              if (!isNaN(parsedAge) && parsedAge >= 18 && parsedAge <= 125) {
+                age = parsedAge;
+              }
+            }
           }
           if (/लिंग\s*[:ः\-]?\s*([^\s\n\r]+)/i.test(line)) {
             const m = line.match(/लिंग\s*[:ः\-]?\s*([^\s\n\r]+)/i);
