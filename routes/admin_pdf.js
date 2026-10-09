@@ -187,22 +187,43 @@ router.post('/upload', (req, res, next) => {
           });
           console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters. Excel generated: ${msg.excelFilename}`);
         } catch (dbError) {
-          uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+          uploadJobs.set(jobId, { 
+            ...uploadJobs.get(jobId), 
+            status: 'failed', 
+            progress: 0, 
+            errorMessage: `डेटाबेस में सुरक्षित करने में त्रुटि: ${dbError.message}` 
+          });
           console.error(`Database write failed for ${filePath}:`, dbError);
         }
       } else if (msg.type === 'error') {
-        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+        uploadJobs.set(jobId, { 
+          ...uploadJobs.get(jobId), 
+          status: 'failed', 
+          progress: 0, 
+          errorMessage: msg.data || 'PDF पार्सिंग में समस्या आई।' 
+        });
         console.error(`Worker PDF processing failed for ${filePath}:`, msg.data);
       }
     });
 
     worker.on('error', (err) => {
-      uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+      uploadJobs.set(jobId, { 
+        ...uploadJobs.get(jobId), 
+        status: 'failed', 
+        progress: 0, 
+        errorMessage: err.message || 'Worker thread execution error' 
+      });
       console.error(`Worker error for ${filePath}:`, err);
     });
 
     worker.on('exit', (code) => {
-      if (code !== 0) {
+      if (code !== 0 && uploadJobs.get(jobId)?.status !== 'completed') {
+        uploadJobs.set(jobId, { 
+          ...uploadJobs.get(jobId), 
+          status: 'failed', 
+          progress: 0, 
+          errorMessage: `Worker process exited with code ${code}` 
+        });
         console.error(`Worker stopped with exit code ${code}`);
       }
     });

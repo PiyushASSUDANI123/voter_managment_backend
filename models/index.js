@@ -67,8 +67,12 @@ const voterSchema = new mongoose.Schema({
 // Helps in filtering voters by organization and part/ward quickly
 voterSchema.index({ organizationId: 1, partNo: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, wardNo: 1 });
+voterSchema.index({ organizationId: 1, houseNo: 1 });
 voterSchema.index({ organizationId: 1, familyId: 1 });
 voterSchema.index({ organizationId: 1, epic: 1 });
+voterSchema.index({ organizationId: 1, assignedWorker: 1 });
+voterSchema.index({ organizationId: 1, supportStatus: 1 });
+voterSchema.index({ organizationId: 1, isMigrant: 1 });
 
 // 🚀 Performance Optimization: Text Search Index
 // Enables fast text searching across multiple name fields (English & Hindi)
@@ -85,11 +89,13 @@ const slipDispatchSchema = new mongoose.Schema({
   recipientPhone: { type: String, required: true },
   slipType: { type: String, enum: ['individual', 'family'], default: 'individual' },
   status: { type: String, required: true },
-  providerMessageId: { type: String, default: null },
+  providerMessageId: { type: String, default: null, index: true },
   errorMessage: { type: String, default: null },
   organizationId: { type: String, required: true, index: true },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now, index: true }
 });
+
+slipDispatchSchema.index({ organizationId: 1, createdAt: -1 });
 
 const Organization = mongoose.model('Organization', organizationSchema);
 const User = mongoose.model('User', userSchema);
