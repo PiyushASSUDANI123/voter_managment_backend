@@ -218,5 +218,17 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     res.status(500).json({ message: 'Vote status could not be updated.' });
   }
 });
+// EXPLICIT CLIENT PROTECTION: Clients cannot delete or bulk upload voter records
+router.delete('*', verifyToken, (req, res) => {
+  return res.status(403).json({
+    message: 'क्लाइंट्स को डेटा डिलीट करने की अनुमति नहीं है। आप केवल डेटा देख व एडिट कर सकते हैं।'
+  });
+});
+
+router.post('*', verifyToken, (req, res) => {
+  return res.status(403).json({
+    message: 'क्लाइंट्स को नया डेटा अपलोड करने की अनुमति नहीं है। नया डेटा केवल सुपर एडमिन द्वारा अपलोड किया जा सकता है। आप केवल डेटा देख व एडिट कर सकते हैं।'
+  });
+});
 
 module.exports = router;

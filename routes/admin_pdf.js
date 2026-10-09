@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const cron = require('node-cron');
 const { Voter } = require('../models');
 const { fixCorruptedHindi } = require('../lib/hindiDictionary');
+const { verifyToken, isAdmin } = require('../middleware/authMiddleware');
 
 const uploadDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadDir)) {
@@ -59,8 +60,8 @@ cron.schedule('0 * * * *', () => {
   });
 });
 
-// GET /jobs - to fetch recent upload jobs
-router.get('/jobs', (req, res) => {
+// GET /jobs - to fetch recent upload jobs (SuperAdmin Only)
+router.get('/jobs', verifyToken, isAdmin, (req, res) => {
   const orgId = req.query.organizationId;
   let jobs = Array.from(uploadJobs.values());
   if (orgId) {
@@ -70,14 +71,14 @@ router.get('/jobs', (req, res) => {
   res.json(jobs);
 });
 
-// DELETE /jobs - clear upload jobs
-router.delete('/jobs', (req, res) => {
+// DELETE /jobs - clear upload jobs (SuperAdmin Only)
+router.delete('/jobs', verifyToken, isAdmin, (req, res) => {
   uploadJobs.clear();
   res.json({ success: true, message: 'Upload history cleared.' });
 });
 
 // GET /download-excel/:id - Download generated Excel file for a PDF job
-router.get('/download-excel/:id', (req, res) => {
+router.get('/download-excel/:id', verifyToken, isAdmin, (req, res) => {
   const job = uploadJobs.get(req.params.id);
   if (!job || !job.excelPath || !fs.existsSync(job.excelPath)) {
     return res.status(404).json({ error: 'Excel फाइल उपलब्ध नहीं है या अभी प्रोसेस हो रही है।' });
@@ -86,8 +87,8 @@ router.get('/download-excel/:id', (req, res) => {
   res.download(job.excelPath, downloadName);
 });
 
-// Task 3: Admin PDF Upload & Voter ID Extraction
-router.post('/upload', (req, res, next) => {
+// Task 3: Admin PDF Upload & Voter ID Extraction (SuperAdmin Only)
+router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
   upload.single('pdf')(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
