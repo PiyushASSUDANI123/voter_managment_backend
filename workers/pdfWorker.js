@@ -6,7 +6,7 @@ const { fixCorruptedHindi } = require('../lib/hindiDictionary');
 const { performLocalOCR } = require('../lib/ocrService');
 
 async function processPdf() {
-  const { filePath, useOcr, organizationId } = workerData;
+  const { filePath, useOcr, organizationId, wardNo, boothNo, uploadedBy } = workerData;
   let text = "";
 
   const updateProgress = (prog) => {
@@ -44,8 +44,8 @@ async function processPdf() {
 
     const partMatch = text.match(/(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
     const wardMatch = text.match(/(?:वार्ड|Ward)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
-    const defaultPartNo = partMatch ? partMatch[1] : "1";
-    const defaultWardNo = wardMatch ? wardMatch[1] : "1";
+    const defaultPartNo = boothNo || (partMatch ? partMatch[1] : "1");
+    const defaultWardNo = wardNo || (wardMatch ? wardMatch[1] : "1");
 
     const operations = epics.map((current, i) => {
       const startIndex = i === 0 ? 0 : epics[i - 1].index + epics[i - 1].epic.length;
@@ -74,26 +74,33 @@ async function processPdf() {
         relationType = genderVal === "स्त्री" ? "पति" : "पिता";
       }
 
+      const updateFields = {
+        nameHi: nameHi,
+        relativeNameHi: relativeNameHi,
+        relationType: relationType,
+        houseNo: houseNo,
+        age: age,
+        gender: genderVal
+      };
+
+      if (wardNo) updateFields.wardNo = wardNo;
+      if (boothNo) updateFields.partNo = boothNo;
+      if (uploadedBy) updateFields.assignedWorker = uploadedBy;
+
       return {
         updateOne: {
           filter: { epic: current.epic, organizationId: organizationId },
           update: {
-            $set: {
-              nameHi: nameHi,
-              relativeNameHi: relativeNameHi,
-              relationType: relationType,
-              houseNo: houseNo,
-              age: age,
-              gender: genderVal
-            },
+            $set: updateFields,
             $setOnInsert: {
               _id: `voter_${crypto.randomUUID()}`,
               epic: current.epic,
-              wardNo: defaultWardNo,
-              partNo: defaultPartNo,
+              wardNo: wardNo || defaultWardNo,
+              partNo: boothNo || defaultPartNo,
               serialNo: i + 1,
               nameEn: nameHi,
-              organizationId: organizationId
+              organizationId: organizationId,
+              assignedWorker: uploadedBy || ""
             }
           },
           upsert: true

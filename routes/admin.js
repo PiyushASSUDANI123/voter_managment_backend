@@ -354,6 +354,19 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     return res.status(404).json({ message: 'Organization not found.' });
   }
 
+  const defaultWardNo = typeof req.body.wardNo === 'string' ? req.body.wardNo.trim() : '';
+  const defaultBoothNo = typeof req.body.boothNo === 'string' ? req.body.boothNo.trim() : '';
+  const defaultUploadedBy = typeof req.body.uploadedBy === 'string' ? req.body.uploadedBy.trim() : '';
+  const defaultDescription = typeof req.body.listDescription === 'string' ? req.body.listDescription.trim() : '';
+
+  // Auto register ward if provided
+  if (defaultWardNo) {
+    await Organization.updateOne(
+      { _id: organizationId },
+      { $addToSet: { wards: defaultWardNo } }
+    ).catch(err => console.error('Error adding ward to org:', err));
+  }
+
   const parseRow = (row) => {
     const cellText = (column) => {
       const value = row.getCell(column).text || row.getCell(column).value;
@@ -361,8 +374,8 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     };
     const voter = {
       epic: cellText(1).toUpperCase(),
-      wardNo: cellText(2),
-      partNo: cellText(3),
+      wardNo: cellText(2) || defaultWardNo,
+      partNo: cellText(3) || defaultBoothNo,
       serialNo: Number(cellText(4)),
       nameEn: cellText(5),
       nameHi: cellText(6),
@@ -380,6 +393,9 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       villageNameHi: cellText(18),
       organizationId,
     };
+    if (defaultUploadedBy) {
+      voter.assignedWorker = defaultUploadedBy;
+    }
     if (!voter.epic || !voter.wardNo || !voter.partNo || !Number.isInteger(voter.serialNo)
       || voter.serialNo < 1 || !voter.nameEn || !voter.nameHi) return null;
     return voter;
@@ -400,6 +416,17 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
 
     if (batch.length === 0) return res.status(400).json({ message: 'No valid voter records found in file.' });
 
+    // Track all detected wards in the batch
+    const detectedWards = new Set();
+    if (defaultWardNo) detectedWards.add(defaultWardNo);
+    batch.forEach(v => { if (v.wardNo) detectedWards.add(v.wardNo); });
+    if (detectedWards.size > 0) {
+      await Organization.updateOne(
+        { _id: organizationId },
+        { $addToSet: { wards: { $each: Array.from(detectedWards) } } }
+      ).catch(() => {});
+    }
+
     const uniqueBatch = [...new Map(batch.map((voter) => [voter.epic, voter])).values()];
     const result = await Voter.bulkWrite(uniqueBatch.map((voter) => ({
       updateOne: {
@@ -419,11 +446,38 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     const keys = cache.keys();
     keys.forEach(k => cache.del(k));
 
+    try {
+      const adminPdfRouter = require('./admin_pdf');
+      if (adminPdfRouter && adminPdfRouter.uploadJobs) {
+        const jobId = crypto.randomUUID();
+        adminPdfRouter.uploadJobs.set(jobId, {
+          id: jobId,
+          filename: req.file.originalname,
+          fileType: 'excel',
+          organizationId,
+          wardNo: defaultWardNo,
+          boothNo: defaultBoothNo,
+          uploadedBy: defaultUploadedBy,
+          listDescription: defaultDescription,
+          status: 'completed',
+          progress: 100,
+          extractedCount: inserted + updated,
+          uploadedAt: new Date().toISOString()
+        });
+      }
+    } catch (e) {
+      console.warn('Could not record excel job:', e.message);
+    }
+
     res.json({
       success: true,
       inserted,
       updated,
       count: inserted + updated,
+      wardNo: defaultWardNo,
+      boothNo: defaultBoothNo,
+      uploadedBy: defaultUploadedBy,
+      listDescription: defaultDescription
     });
   } catch (err) {
     console.error('Excel processing error:', err);

@@ -62,12 +62,11 @@ cron.schedule('0 * * * *', () => {
 // GET /jobs - to fetch recent upload jobs
 router.get('/jobs', (req, res) => {
   const orgId = req.query.organizationId;
-  if (!orgId) return res.status(400).json({ error: 'Organization ID is required' });
-  
-  const jobs = Array.from(uploadJobs.values())
-    .filter(j => j.organizationId === orgId)
-    .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
-  
+  let jobs = Array.from(uploadJobs.values());
+  if (orgId) {
+    jobs = jobs.filter(j => j.organizationId === orgId);
+  }
+  jobs.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   res.json(jobs);
 });
 
@@ -90,12 +89,35 @@ router.post('/upload', (req, res, next) => {
     
     const filePath = req.file.path;
     const organizationId = req.body.organizationId || "org_default";
+    const wardNo = (req.body.wardNo || "").trim();
+    const boothNo = (req.body.boothNo || "").trim();
+    const uploadedBy = (req.body.uploadedBy || "").trim();
+    const listDescription = (req.body.listDescription || "").trim();
     const jobId = crypto.randomUUID();
+
+    // Auto-register ward in Organization if new
+    if (wardNo && organizationId) {
+      try {
+        const { Organization } = require('../models');
+        if (Organization) {
+          await Organization.updateOne(
+            { _id: organizationId },
+            { $addToSet: { wards: wardNo } }
+          );
+        }
+      } catch (orgErr) {
+        console.warn('Could not update organization wards:', orgErr.message);
+      }
+    }
 
     uploadJobs.set(jobId, {
       id: jobId,
       filename: req.file.originalname,
       organizationId: organizationId,
+      wardNo: wardNo,
+      boothNo: boothNo,
+      uploadedBy: uploadedBy,
+      listDescription: listDescription,
       status: 'processing',
       progress: 0,
       extractedCount: 0,
@@ -111,7 +133,10 @@ router.post('/upload', (req, res, next) => {
       workerData: {
         filePath,
         organizationId,
-        useOcr: req.body.useOcr === 'true'
+        useOcr: req.body.useOcr === 'true',
+        wardNo,
+        boothNo,
+        uploadedBy
       }
     });
 
@@ -169,4 +194,5 @@ router.post('/upload', (req, res, next) => {
   }
 });
 
+router.uploadJobs = uploadJobs;
 module.exports = router;
