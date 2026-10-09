@@ -70,6 +70,12 @@ router.get('/jobs', (req, res) => {
   res.json(jobs);
 });
 
+// DELETE /jobs - clear upload jobs
+router.delete('/jobs', (req, res) => {
+  uploadJobs.clear();
+  res.json({ success: true, message: 'Upload history cleared.' });
+});
+
 // Task 3: Admin PDF Upload & Voter ID Extraction
 router.post('/upload', (req, res, next) => {
   upload.single('pdf')(req, res, (err) => {
