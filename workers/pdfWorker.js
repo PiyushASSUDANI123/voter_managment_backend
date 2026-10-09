@@ -203,8 +203,31 @@ async function processPdf() {
       });
 
     updateProgress(65);
+
+    // Auto-generate formatted Excel workbook for instant candidate/admin download
+    const path = require('path');
+    const { generateVoterExcel } = require('../lib/excelExporter');
+    const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
+    const excelPath = path.join(__dirname, '../uploads/excels', excelFilename);
+    let generatedExcelPath = null;
+    
+    try {
+      generatedExcelPath = await generateVoterExcel(finalVoterList, excelPath, { 
+        wardNo: wardNo || defaultWardNo, 
+        boothNo: boothNo || defaultPartNo 
+      });
+    } catch (excelErr) {
+      console.warn("Could not generate Excel file:", excelErr.message);
+    }
+
     if (parentPort) {
-      parentPort.postMessage({ type: 'done', data: operations, epicsCount: operations.length });
+      parentPort.postMessage({ 
+        type: 'done', 
+        data: operations, 
+        epicsCount: operations.length,
+        excelPath: generatedExcelPath,
+        excelFilename 
+      });
     }
 
   } catch (err) {

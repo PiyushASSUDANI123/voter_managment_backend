@@ -76,6 +76,16 @@ router.delete('/jobs', (req, res) => {
   res.json({ success: true, message: 'Upload history cleared.' });
 });
 
+// GET /download-excel/:id - Download generated Excel file for a PDF job
+router.get('/download-excel/:id', (req, res) => {
+  const job = uploadJobs.get(req.params.id);
+  if (!job || !job.excelPath || !fs.existsSync(job.excelPath)) {
+    return res.status(404).json({ error: 'Excel फाइल उपलब्ध नहीं है या अभी प्रोसेस हो रही है।' });
+  }
+  const downloadName = job.excelFilename || 'voter_list.xlsx';
+  res.download(job.excelPath, downloadName);
+});
+
 // Task 3: Admin PDF Upload & Voter ID Extraction
 router.post('/upload', (req, res, next) => {
   upload.single('pdf')(req, res, (err) => {
@@ -170,9 +180,12 @@ router.post('/upload', (req, res, next) => {
             ...uploadJobs.get(jobId),
             status: 'completed',
             progress: 100,
-            extractedCount: epicsCount
+            extractedCount: epicsCount,
+            excelPath: msg.excelPath,
+            excelFilename: msg.excelFilename,
+            hasExcel: Boolean(msg.excelPath)
           });
-          console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters.`);
+          console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters. Excel generated: ${msg.excelFilename}`);
         } catch (dbError) {
           uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
           console.error(`Database write failed for ${filePath}:`, dbError);
