@@ -18,7 +18,10 @@ const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => cb(null, Date.now() + '-' + file.originalname)
 });
-const upload = multer({ storage });
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+});
 
 const uploadJobs = new Map();
 
@@ -90,136 +93,63 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
     // Respond immediately to avoid browser timeout for large PDFs
     res.json({ message: 'Upload started', backgroundProcessing: true, jobId });
 
-    // Process asynchronously
-    (async () => {
-      try {
-        const updateJobProgress = (prog) => {
-          uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: prog });
-        };
-        
-        let text = "";
-        
-        if (req.body.useOcr === 'true') {
-          console.log(`Using Local OCR for ${filePath}`);
-          const { performLocalOCR } = require('../lib/ocrService');
-          text = await performLocalOCR(filePath, updateJobProgress);
-        } else {
-          updateJobProgress(10); // Start parsing PDF
-          const dataBuffer = fs.readFileSync(filePath);
-          const data = await pdfParse(dataBuffer);
-          updateJobProgress(40); // Parsing complete, starting extraction
-          text = data.text;
-        }
-        
-        const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2}\/\d{2}\/\d{3}\/\d{6}/gi;
-        
-        let match;
-        const allEpics = [];
-        while ((match = epicRegex.exec(text)) !== null) {
-          allEpics.push({ epic: match[0].toUpperCase(), index: match.index });
-        }
-        
-        const epics = [];
-        const seen = new Set();
-        for (const e of allEpics) {
-          if (!seen.has(e.epic)) {
-            seen.add(e.epic);
-            epics.push(e);
-          }
-        }
-
-        updateJobProgress(50); // Regex search complete, building bulk operations
-
-        // Extract common metadata (part no, ward no) if available
-        const partMatch = text.match(/(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
-        const wardMatch = text.match(/(?:वार्ड|Ward)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
-        const defaultPartNo = partMatch ? partMatch[1] : "1";
-        const defaultWardNo = wardMatch ? wardMatch[1] : "1";
-
-        const operations = epics.map((current, i) => {
-          const startIndex = i === 0 ? 0 : epics[i-1].index + epics[i-1].epic.length;
-          let block = text.substring(startIndex, current.index).trimEnd();
-          
-          const lines = block.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-          
-          let nameHi = "PDF Extracted";
-          let relativeNameHi = "";
-          let relationType = "";
-          let houseNo = "";
-          let age = null;
-          let genderVal = "अन्य";
-
-          if (lines.length >= 5) {
-            relativeNameHi = fixCorruptedHindi(lines[lines.length - 1]);
-            nameHi = fixCorruptedHindi(lines[lines.length - 2]);
-            houseNo = lines[lines.length - 3];
-            const genderRaw = lines[lines.length - 4];
-            const ageRaw = lines[lines.length - 5];
-            
-            age = parseInt(ageRaw) || null;
-            if (genderRaw.includes("पचरष") || genderRaw.includes("प")) genderVal = "पुरुष";
-            else if (genderRaw.includes("सल") || genderRaw.includes("स")) genderVal = "स्त्री";
-            
-            relationType = genderVal === "स्त्री" ? "पति" : "पिता";
-          }
-
-          return {
-            updateOne: {
-              filter: { epic: current.epic, organizationId: organizationId },
-              update: {
-                $set: {
-                  nameHi: nameHi,
-                  relativeNameHi: relativeNameHi,
-                  relationType: relationType,
-                  houseNo: houseNo,
-                  age: age,
-                  gender: genderVal
-                },
-                $setOnInsert: {
-                  _id: `voter_${crypto.randomUUID()}`,
-                  epic: current.epic,
-                  wardNo: defaultWardNo,
-                  partNo: defaultPartNo,
-                  serialNo: i + 1,
-                  nameEn: nameHi,
-                  organizationId: organizationId
-                }
-              },
-              upsert: true
-            }
-          };
-        });
-
-        updateJobProgress(60); // Operations built, saving to database
-
-        if (operations.length > 0) {
-          const CHUNK_SIZE = 500;
-          let processed = 0;
-          for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
-            const chunk = operations.slice(i, i + CHUNK_SIZE);
-            await Voter.bulkWrite(chunk, { ordered: false });
-            processed += chunk.length;
-            const dbProgress = Math.floor((processed / operations.length) * 40); // up to 40%
-            updateJobProgress(60 + dbProgress);
-          }
-        }
-        
-        uploadJobs.set(jobId, {
-          ...uploadJobs.get(jobId),
-          status: 'completed',
-          progress: 100,
-          extractedCount: epics.length
-        });
-        console.log(`Background PDF processing complete for ${filePath}. Extracted ${epics.length} voters.`);
-      } catch (bgError) {
-        uploadJobs.set(jobId, {
-          ...uploadJobs.get(jobId),
-          status: 'failed',
-          progress: 0
-        });
-        console.error(`Background PDF processing failed for ${filePath}:`, bgError);
+    // Process using Worker Thread to avoid blocking the main event loop
+    const { Worker } = require('worker_threads');
+    const worker = new Worker(path.join(__dirname, '../workers/pdfWorker.js'), {
+      workerData: {
+        filePath,
+        organizationId,
+        useOcr: req.body.useOcr === 'true'
       }
-    })();
+    });
+
+    worker.on('message', async (msg) => {
+      if (msg.type === 'progress') {
+        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: msg.data });
+      } else if (msg.type === 'done') {
+        const operations = msg.data;
+        const epicsCount = msg.epicsCount;
+        
+        try {
+          if (operations.length > 0) {
+            const CHUNK_SIZE = 500;
+            let processed = 0;
+            for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
+              const chunk = operations.slice(i, i + CHUNK_SIZE);
+              await Voter.bulkWrite(chunk, { ordered: false });
+              processed += chunk.length;
+              const dbProgress = Math.floor((processed / operations.length) * 40);
+              uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: 60 + dbProgress });
+            }
+          }
+          
+          uploadJobs.set(jobId, {
+            ...uploadJobs.get(jobId),
+            status: 'completed',
+            progress: 100,
+            extractedCount: epicsCount
+          });
+          console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters.`);
+        } catch (dbError) {
+          uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+          console.error(`Database write failed for ${filePath}:`, dbError);
+        }
+      } else if (msg.type === 'error') {
+        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+        console.error(`Worker PDF processing failed for ${filePath}:`, msg.data);
+      }
+    });
+
+    worker.on('error', (err) => {
+      uploadJobs.set(jobId, { ...uploadJobs.get(jobId), status: 'failed', progress: 0 });
+      console.error(`Worker error for ${filePath}:`, err);
+    });
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        console.error(`Worker stopped with exit code ${code}`);
+      }
+    });
 
   } catch (error) {
     console.error('PDF processing error:', error);

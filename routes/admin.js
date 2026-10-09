@@ -246,16 +246,35 @@ router.put('/users/:id/active', verifyToken, isAdmin, async (req, res) => {
 
 router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
   const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 1000;
   const query = orgId ? { organizationId: orgId } : {};
     
-  const cacheKey = `master_data_${orgId || 'all'}`;
+  const cacheKey = `master_data_${orgId || 'all'}_p${page}_l${limit}`;
   const cachedData = cache.get(cacheKey);
   if (cachedData) return res.json(cachedData);
 
   try {
-    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).limit(1000).lean();
-    cache.set(cacheKey, voters);
-    res.json(voters);
+    const skip = (page - 1) * limit;
+    const voters = await Voter.find(query)
+      .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+      
+    const totalCount = await Voter.countDocuments(query);
+    const result = {
+      voters,
+      pagination: {
+        total: totalCount,
+        page,
+        limit,
+        pages: Math.ceil(totalCount / limit)
+      }
+    };
+    
+    cache.set(cacheKey, result);
+    res.json(result);
   } catch (err) {
     console.error('Master data query failed:', err.message);
     res.status(500).json({ message: 'Master data could not be loaded.' });
