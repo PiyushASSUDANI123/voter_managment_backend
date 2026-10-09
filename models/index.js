@@ -82,7 +82,7 @@ voterSchema.index(
 );
 
 const slipDispatchSchema = new mongoose.Schema({
-  _id: { type: String, required: true },
+  _id: { type: String, default: () => `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}` },
   voterId: { type: String, required: true, index: true },
   voterEpic: { type: String, required: true },
   voterName: { type: String, required: true },
@@ -92,6 +92,7 @@ const slipDispatchSchema = new mongoose.Schema({
   providerMessageId: { type: String, default: null, index: true },
   errorMessage: { type: String, default: null },
   organizationId: { type: String, required: true, index: true },
+  sentBy: { type: String, default: null },
   createdAt: { type: Date, default: Date.now, index: true }
 });
 

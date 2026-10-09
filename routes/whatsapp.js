@@ -155,14 +155,16 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
     const part = (dbVoter.partNo || '').replace(/^(भाग|Part)\s*/i, '') || '—';
     const boothName = dbVoter.boothName || `भाग संख्या ${part}`;
 
-    // Create Dispatch record in DB
+    // Create Dispatch record in DB (strictly bound to user's organization)
     const dispatch = await SlipDispatch.create({
+      _id: `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       voterId: dbVoter._id,
       voterEpic: dbVoter.epic,
       voterName,
       recipientPhone,
       status: 'sending',
-      organizationId: req.user.organizationId || 'org_default'
+      organizationId: req.user.organizationId || 'org_default',
+      sentBy: req.user.fullName || req.user.email || 'Client'
     });
     dispatchId = dispatch._id;
 
