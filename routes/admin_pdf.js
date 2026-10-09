@@ -97,12 +97,20 @@ router.post('/upload', upload.single('pdf'), async (req, res) => {
           uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: prog });
         };
         
-        updateJobProgress(10); // Start parsing PDF
-        const dataBuffer = fs.readFileSync(filePath);
-        const data = await pdfParse(dataBuffer);
+        let text = "";
         
-        updateJobProgress(40); // Parsing complete, starting extraction
-        const text = data.text;
+        if (req.body.useOcr === 'true') {
+          console.log(`Using Local OCR for ${filePath}`);
+          const { performLocalOCR } = require('../lib/ocrService');
+          text = await performLocalOCR(filePath, updateJobProgress);
+        } else {
+          updateJobProgress(10); // Start parsing PDF
+          const dataBuffer = fs.readFileSync(filePath);
+          const data = await pdfParse(dataBuffer);
+          updateJobProgress(40); // Parsing complete, starting extraction
+          text = data.text;
+        }
+        
         const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2}\/\d{2}\/\d{3}\/\d{6}/gi;
         
         let match;
