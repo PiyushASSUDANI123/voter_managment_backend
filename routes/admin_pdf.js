@@ -20,7 +20,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ 
   storage,
-  limits: { fileSize: 50 * 1024 * 1024 } // 50MB limit
+  limits: { fileSize: 100 * 1024 * 1024 } // 100MB limit
 });
 
 const uploadJobs = new Map();
@@ -75,7 +75,7 @@ router.post('/upload', (req, res, next) => {
   upload.single('pdf')(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ error: 'फाइल का आकार 50MB से बड़ा है। कृपया 50MB से छोटी PDF फाइल अपलोड करें।' });
+        return res.status(413).json({ error: 'फाइल का आकार 100MB से बड़ा है। कृपया 100MB से छोटी PDF फाइल अपलोड करें।' });
       }
       return res.status(400).json({ error: `फ़ाइल अपलोड त्रुटि: ${err.message}` });
     } else if (err) {

@@ -87,21 +87,24 @@ async function processPdf() {
       if (boothNo) updateFields.partNo = boothNo;
       if (uploadedBy) updateFields.assignedWorker = uploadedBy;
 
+      const setOnInsertFields = {
+        _id: `voter_${crypto.randomUUID()}`,
+        epic: current.epic,
+        serialNo: i + 1,
+        nameEn: nameHi,
+        organizationId: organizationId,
+      };
+
+      if (!wardNo) setOnInsertFields.wardNo = defaultWardNo;
+      if (!boothNo) setOnInsertFields.partNo = defaultPartNo;
+      if (!uploadedBy) setOnInsertFields.assignedWorker = "";
+
       return {
         updateOne: {
           filter: { epic: current.epic, organizationId: organizationId },
           update: {
             $set: updateFields,
-            $setOnInsert: {
-              _id: `voter_${crypto.randomUUID()}`,
-              epic: current.epic,
-              wardNo: wardNo || defaultWardNo,
-              partNo: boothNo || defaultPartNo,
-              serialNo: i + 1,
-              nameEn: nameHi,
-              organizationId: organizationId,
-              assignedWorker: uploadedBy || ""
-            }
+            $setOnInsert: setOnInsertFields
           },
           upsert: true
         }
