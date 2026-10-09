@@ -72,9 +72,21 @@ router.get('/jobs', (req, res) => {
 });
 
 // Task 3: Admin PDF Upload & Voter ID Extraction
-router.post('/upload', upload.single('pdf'), async (req, res) => {
+router.post('/upload', (req, res, next) => {
+  upload.single('pdf')(req, res, (err) => {
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: 'फाइल का आकार 50MB से बड़ा है। कृपया 50MB से छोटी PDF फाइल अपलोड करें।' });
+      }
+      return res.status(400).json({ error: `फ़ाइल अपलोड त्रुटि: ${err.message}` });
+    } else if (err) {
+      return res.status(500).json({ error: `सर्वर अपलोड त्रुटि: ${err.message}` });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No PDF provided.' });
+    if (!req.file) return res.status(400).json({ error: 'कृपया एक वैध PDF फाइल अपलोड करें।' });
     
     const filePath = req.file.path;
     const organizationId = req.body.organizationId || "org_default";
