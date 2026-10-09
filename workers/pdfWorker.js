@@ -22,14 +22,17 @@ async function processPdf() {
     text = pdfData.text || "";
     updateProgress(15);
 
+const { runPythonPdfToExcel, isPythonAvailable } = require('../lib/pythonBridge');
+const ExcelJS = require('exceljs');
+
     // Extract metadata from header
     const partMatch = text.match(/(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
     const wardMatch = text.match(/(?:वार्ड|Ward)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)/i);
     const defaultPartNo = boothNo || (partMatch ? partMatch[1] : "1");
     const defaultWardNo = wardNo || (wardMatch ? wardMatch[1] : "1");
 
-    // Extract all vector EPICs from digital PDF text stream
-    const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2,3}\s*[\/\-]\s*\d{2}\s*[\/\-]\s*\d{2,3}\s*[\/\-]\s*\d{4,6}|[A-Z0-9]{10}/gi;
+    // Extract all vector EPICs from digital PDF text stream (strictly requires numbers)
+    const epicRegex = /[A-Z]{3}[0-9]{7}|[A-Z]{2,4}[0-9]{6,8}|[A-Z]{2,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{3,7}/gi;
     let match;
     const vectorEpics = [];
     const seenEpics = new Set();
@@ -44,46 +47,88 @@ async function processPdf() {
     let finalVoterList = [];
 
     if (useOcr) {
-      // HIGH-PRECISION VISUAL OCR (Bypasses missing CMaps, subset fonts & KrutiDev)
-      console.log(`Running visual OCR pipeline on ${filePath}...`);
-      const { fullText, extractedVoters } = await performLocalOCR(filePath, updateProgress);
-      
-      console.log(`OCR returned ${extractedVoters.length} parsed cards. Vector EPICs count: ${vectorEpics.length}`);
+      // 1. High-Performance Native Python Engine (if available)
+      const pythonOk = await isPythonAvailable();
+      if (pythonOk) {
+        console.log(`Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
+        updateProgress(20);
+        const path = require('path');
+        const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
+        const excelDir = path.join(__dirname, '../uploads/excels');
+        if (!fs.existsSync(excelDir)) fs.mkdirSync(excelDir, { recursive: true });
+        const targetExcelPath = path.join(excelDir, excelFilename);
 
-      // Pair OCR cards with vector EPICs for 100% accuracy
-      finalVoterList = extractedVoters.map((card, idx) => {
-        let matchedEpic = card.epic;
-        // If card epic is missing or slightly noisy, check corresponding vector epic
-        if ((!matchedEpic || matchedEpic.length < 5) && vectorEpics[idx]) {
-          matchedEpic = vectorEpics[idx];
-        } else if (matchedEpic && !vectorEpics.includes(matchedEpic)) {
-          // If OCR had minor noise (e.g. 558 instead of SSB), find closest vector epic
-          const closeVector = vectorEpics.find(ve => 
-            ve.slice(-6) === matchedEpic.slice(-6) ||
-            ve.replace(/[^0-9]/g, '') === matchedEpic.replace(/[^0-9]/g, '')
-          );
-          if (closeVector) matchedEpic = closeVector;
-        }
-
-        return {
-          ...card,
-          epic: matchedEpic || (vectorEpics[idx] || `VOTER_${idx + 1}`)
-        };
-      });
-
-      // If OCR yielded fewer cards than vector EPICs (e.g. some blank cards), fill in remaining
-      if (finalVoterList.length < vectorEpics.length) {
-        for (let i = finalVoterList.length; i < vectorEpics.length; i++) {
-          finalVoterList.push({
-            epic: vectorEpics[i],
-            nameHi: "मतदाता",
-            relativeNameHi: "",
-            relationType: "पिता",
-            houseNo: "",
-            age: null,
-            gender: "अन्य",
-            status: "Active"
+        try {
+          await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
+          updateProgress(50);
+          
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.readFile(targetExcelPath);
+          const worksheet = workbook.getWorksheet('मतदाता सूची') || workbook.worksheets[0];
+          
+          worksheet.eachRow((row, rowNumber) => {
+            if (rowNumber === 1) return; // header
+            const values = row.values;
+            const epic = String(values[2] || '').trim();
+            const nameHi = String(values[3] || '').trim();
+            if (epic || nameHi) {
+              finalVoterList.push({
+                epic: epic || `VOTER_${rowNumber - 1}`,
+                nameHi: nameHi || "मतदाता",
+                relativeNameHi: String(values[4] || '').trim(),
+                relationType: String(values[5] || 'पिता').trim(),
+                houseNo: String(values[6] || '').trim(),
+                age: values[7] ? parseInt(values[7], 10) : null,
+                gender: String(values[8] || 'पुरुष').trim(),
+                status: String(values[9] || 'Active').trim()
+              });
+            }
           });
+          console.log(`Python engine extracted ${finalVoterList.length} voters with high precision.`);
+        } catch (pyErr) {
+          console.warn("Python extraction failed, falling back to local JS OCR:", pyErr.message);
+          finalVoterList = [];
+        }
+      }
+
+      // 2. Fallback to Local JS OCR if Python engine was not executed
+      if (finalVoterList.length === 0) {
+        console.log(`Running visual JS OCR pipeline on ${filePath}...`);
+        const { fullText, extractedVoters } = await performLocalOCR(filePath, updateProgress);
+        
+        console.log(`OCR returned ${extractedVoters.length} parsed cards. Vector EPICs count: ${vectorEpics.length}`);
+
+        finalVoterList = extractedVoters.map((card, idx) => {
+          let matchedEpic = card.epic;
+          if ((!matchedEpic || matchedEpic.length < 5) && vectorEpics[idx]) {
+            matchedEpic = vectorEpics[idx];
+          } else if (matchedEpic && !vectorEpics.includes(matchedEpic)) {
+            const closeVector = vectorEpics.find(ve => 
+              ve.slice(-6) === matchedEpic.slice(-6) ||
+              ve.replace(/[^0-9]/g, '') === matchedEpic.replace(/[^0-9]/g, '')
+            );
+            if (closeVector) matchedEpic = closeVector;
+          }
+
+          return {
+            ...card,
+            epic: matchedEpic || (vectorEpics[idx] || `VOTER_${idx + 1}`)
+          };
+        });
+
+        if (finalVoterList.length < vectorEpics.length) {
+          for (let i = finalVoterList.length; i < vectorEpics.length; i++) {
+            finalVoterList.push({
+              epic: vectorEpics[i],
+              nameHi: "मतदाता",
+              relativeNameHi: "",
+              relationType: "पिता",
+              houseNo: "",
+              age: null,
+              gender: "अन्य",
+              status: "Active"
+            });
+          }
         }
       }
 
