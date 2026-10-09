@@ -139,7 +139,7 @@ router.post('/upload', (req, res, next) => {
       workerData: {
         filePath,
         organizationId,
-        useOcr: req.body.useOcr === 'true',
+        useOcr: req.body.useOcr === 'true' || req.body.useOcr === 'on' || req.body.useOcr === true,
         wardNo,
         boothNo,
         uploadedBy
