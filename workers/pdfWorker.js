@@ -256,13 +256,17 @@ const ExcelJS = require('exceljs');
     const excelPath = path.join(__dirname, '../uploads/excels', excelFilename);
     let generatedExcelPath = null;
     
-    try {
-      generatedExcelPath = await generateVoterExcel(finalVoterList, excelPath, { 
-        wardNo: wardNo || defaultWardNo, 
-        boothNo: boothNo || defaultPartNo 
-      });
-    } catch (excelErr) {
-      console.warn("Could not generate Excel file:", excelErr.message);
+    if (fs.existsSync(excelPath)) {
+      generatedExcelPath = excelPath;
+    } else {
+      try {
+        generatedExcelPath = await generateVoterExcel(finalVoterList, excelPath, { 
+          wardNo: wardNo || defaultWardNo, 
+          boothNo: boothNo || defaultPartNo 
+        });
+      } catch (excelErr) {
+        console.warn("Could not generate Excel file:", excelErr.message);
+      }
     }
 
     if (parentPort) {

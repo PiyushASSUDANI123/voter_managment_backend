@@ -6,6 +6,8 @@ yarn-debug.log*
 yarn-error.log*
 uploads/
 *.traineddata
+__pycache__/
+*.pyc
 
 # Runtime data
 pids
