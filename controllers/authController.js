@@ -1,6 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { User, Organization } = require('../models/index');
+const { User, Organization, Voter } = require('../models/index');
 
 exports.register = async (req, res) => {
   try {
@@ -71,6 +71,7 @@ exports.login = async (req, res) => {
         name: user.fullName || user.email,
         role: user.role,
         organizationId: user.organizationId,
+        organizationName: org.name || '',
         subRole: user.subRole || user.role,
         scopeType: user.scopeType || 'All',
         scopeValue: user.scopeValue || '',
@@ -93,6 +94,8 @@ exports.login = async (req, res) => {
             name: user.fullName || user.email,
             role: user.role,
             subRole: user.subRole || user.role,
+            organizationId: user.organizationId,
+            organizationName: org.name || '',
             scope: user.scopeType || 'All',
             scopeValue: user.scopeValue || '',
             modules: enabledModules,
@@ -104,6 +107,51 @@ exports.login = async (req, res) => {
   } catch (err) {
     console.error('Login failed:', err.message);
     res.status(500).json({ message: 'Login could not be completed.' });
+  }
+};
+
+exports.getClients = async (req, res) => {
+  try {
+    const isPlatformAdmin = req.user.role === 'admin';
+    if (isPlatformAdmin) {
+      const orgs = await Organization.find({ isActive: { $ne: false } }).sort({ name: 1 }).lean();
+      const orgIds = orgs.map((o) => o._id);
+      const voterCounts = await Voter.aggregate([
+        { $match: { organizationId: { $in: orgIds } } },
+        { $group: { _id: '$organizationId', count: { $sum: 1 } } },
+      ]);
+      const voterCountMap = {};
+      voterCounts.forEach((vc) => {
+        voterCountMap[vc._id] = vc.count;
+      });
+      return res.json(
+        orgs.map((o) => ({
+          id: o._id,
+          name: o.name,
+          code: o.code,
+          candidateName: o.candidateName || '',
+          candidateParty: o.candidateParty || '',
+          voterCount: voterCountMap[o._id] || 0,
+        }))
+      );
+    } else {
+      const org = await Organization.findById(req.user.organizationId).lean();
+      if (!org) return res.json([]);
+      const voterCount = await Voter.countDocuments({ organizationId: org._id });
+      return res.json([
+        {
+          id: org._id,
+          name: org.name,
+          code: org.code,
+          candidateName: org.candidateName || '',
+          candidateParty: org.candidateParty || '',
+          voterCount,
+        },
+      ]);
+    }
+  } catch (err) {
+    console.error('Failed to get clients:', err);
+    res.status(500).json({ message: 'Clients could not be loaded.' });
   }
 };
 
