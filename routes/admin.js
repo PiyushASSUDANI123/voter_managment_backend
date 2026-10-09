@@ -28,6 +28,9 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
         id: o._id, name: o.name, modules: o.enabledModules || [],
         wards: o.allowedWards || [], isActive: o.isActive, createdAt: o.createdAt,
         adminCount, activeWorkers, voterCount,
+        whatsappEnabled: o.whatsappEnabled !== false,
+        whatsappCredits: typeof o.whatsappCredits === 'number' ? o.whatsappCredits : 100,
+        whatsappUsed: typeof o.whatsappUsed === 'number' ? o.whatsappUsed : 0
       };
     }));
     
@@ -55,6 +58,8 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
   const id = `tenant_${crypto.randomUUID()}`;
   const enabledModules = [...new Set([...moduleList, 'accounts'])];
   const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
+  const initialCredits = Number.isInteger(Number(req.body.whatsappCredits)) ? Math.max(0, Number(req.body.whatsappCredits)) : 100;
+  const isWpEnabled = typeof req.body.whatsappEnabled === 'boolean' ? req.body.whatsappEnabled : true;
   
   const session = await mongoose.startSession();
   try {
@@ -66,7 +71,10 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
       _id: id,
       name: name.trim(),
       enabledModules: enabledModules,
-      allowedWards: allowedWards
+      allowedWards: allowedWards,
+      whatsappEnabled: isWpEnabled,
+      whatsappCredits: initialCredits,
+      whatsappUsed: 0
     }], { session });
     
     await User.create([{
@@ -106,18 +114,55 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
     const enabledModules = [...new Set([...moduleList, 'accounts'])];
     const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
     
-    const org = await Organization.findByIdAndUpdate(req.params.id, {
+    const updatePayload = {
       name: name.trim(),
       enabledModules,
       allowedWards,
       isActive: typeof isActive === 'boolean' ? isActive : true
-    });
+    };
+
+    if (typeof req.body.whatsappEnabled === 'boolean') {
+      updatePayload.whatsappEnabled = req.body.whatsappEnabled;
+    }
+    if (req.body.whatsappCredits !== undefined) {
+      updatePayload.whatsappCredits = Math.max(0, Number.parseInt(req.body.whatsappCredits, 10) || 0);
+    }
+
+    const org = await Organization.findByIdAndUpdate(req.params.id, updatePayload);
     
     if (!org) return res.status(404).json({ message: 'Organization not found.' });
     res.json({ success: true, message: 'Organization updated.' });
   } catch (err) {
     console.error('Organization update failed:', err.message);
     res.status(500).json({ message: 'Could not update organization.' });
+  }
+});
+
+// Dedicated fast endpoint to adjust WhatsApp credits
+router.put('/organizations/:id/whatsapp-credits', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { credits, addCredits, enabled } = req.body;
+    const org = await Organization.findById(req.params.id);
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+
+    const updateOps = {};
+    if (typeof enabled === 'boolean') updateOps.whatsappEnabled = enabled;
+    if (typeof credits === 'number') updateOps.whatsappCredits = Math.max(0, credits);
+    else if (typeof addCredits === 'number') {
+      updateOps.whatsappCredits = Math.max(0, (org.whatsappCredits || 0) + addCredits);
+    }
+
+    await Organization.updateOne({ _id: req.params.id }, { $set: updateOps });
+    const updated = await Organization.findById(req.params.id).lean();
+    res.json({
+      success: true,
+      message: 'WhatsApp credits updated successfully.',
+      whatsappCredits: updated.whatsappCredits,
+      whatsappEnabled: updated.whatsappEnabled
+    });
+  } catch (err) {
+    console.error('Update WhatsApp credits error:', err.message);
+    res.status(500).json({ message: 'Could not update WhatsApp credits.' });
   }
 });
 

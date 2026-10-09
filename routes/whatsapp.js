@@ -3,7 +3,7 @@ const router = express.Router();
 const axios = require('axios');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
-const { Voter, SlipDispatch } = require('../models/index');
+const { Voter, SlipDispatch, Organization } = require('../models/index');
 
 /**
  * Standardize recipient phone number for WhatsApp Meta API (E.164 without '+')
@@ -21,6 +21,97 @@ function normalizePhoneNumber(input) {
   }
   return digits;
 }
+
+/**
+ * Helper to check and deduct 1 credit atomically from organization
+ */
+async function verifyAndDeductCredit(orgId) {
+  let org = await Organization.findById(orgId);
+  if (!org && orgId === 'org_default') {
+    org = await Organization.create({
+      _id: 'org_default',
+      name: 'Default Organization',
+      whatsappEnabled: true,
+      whatsappCredits: 500,
+      whatsappUsed: 0
+    });
+  }
+  if (!org) {
+    return { ok: false, error: 'संगठन रिकॉर्ड नहीं मिला।' };
+  }
+  if (org.whatsappEnabled === false) {
+    return {
+      ok: false,
+      error: 'एडमिन द्वारा आपके संगठन के लिए WhatsApp मैसेजिंग बंद (Disabled) की गई है।'
+    };
+  }
+  const credits = typeof org.whatsappCredits === 'number' ? org.whatsappCredits : 0;
+  if (credits <= 0) {
+    return {
+      ok: false,
+      error: 'आपके संगठन के WhatsApp क्रेडिट समाप्त हो चुके हैं (0 क्रेडिट शेष)। कृपया एडमिन से और क्रेडिट प्राप्त करें।'
+    };
+  }
+
+  const updated = await Organization.findOneAndUpdate(
+    { _id: org._id, whatsappCredits: { $gt: 0 } },
+    { $inc: { whatsappCredits: -1, whatsappUsed: 1 } },
+    { new: true }
+  );
+
+  if (!updated) {
+    return {
+      ok: false,
+      error: 'WhatsApp क्रेडिट समाप्त हो चुके हैं। कृपया एडमिन से क्रेडिट बढ़वाएं।'
+    };
+  }
+
+  return { ok: true, remainingCredits: updated.whatsappCredits };
+}
+
+async function refundCredit(orgId) {
+  try {
+    await Organization.updateOne(
+      { _id: orgId },
+      { $inc: { whatsappCredits: 1, whatsappUsed: -1 } }
+    );
+  } catch (err) {
+    console.error('Error refunding credit:', err.message);
+  }
+}
+
+/**
+ * GET /api/whatsapp/quota - Check current organization's WhatsApp credits and status
+ */
+router.get('/quota', verifyToken, async (req, res) => {
+  try {
+    const orgId = req.user.organizationId || 'org_default';
+    let org = await Organization.findById(orgId).lean();
+    if (!org && orgId === 'org_default') {
+      org = { whatsappEnabled: true, whatsappCredits: 500, whatsappUsed: 0 };
+    }
+    const token = process.env.META_WHATSAPP_TOKEN?.trim();
+    const phoneNumberId = process.env.META_PHONE_ID?.trim();
+    const metaConfigured = Boolean(token && phoneNumberId);
+
+    const credits = typeof org?.whatsappCredits === 'number' ? org.whatsappCredits : 100;
+    const enabled = org ? org.whatsappEnabled !== false : true;
+    const used = typeof org?.whatsappUsed === 'number' ? org.whatsappUsed : 0;
+
+    res.json({
+      organizationId: orgId,
+      organizationName: org?.name || 'Default Organization',
+      whatsappEnabled: enabled,
+      whatsappCredits: credits,
+      whatsappUsed: used,
+      canSend: enabled && credits > 0,
+      metaConfigured
+    });
+  } catch (err) {
+    console.error('Error fetching WhatsApp quota:', err.message);
+    res.status(500).json({ message: 'Quota could not be retrieved.' });
+  }
+});
 
 /**
  * GET /api/whatsapp/status - Check Meta API configuration status
@@ -116,6 +207,7 @@ router.post('/webhook', async (req, res) => {
 router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res) => {
   let dispatchId = null;
   let metaAccepted = false;
+  const orgId = req.user.organizationId || 'org_default';
 
   try {
     const { voterId, phoneNumber, templateName } = req.body;
@@ -125,7 +217,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 
     if (!token || !phoneNumberId) {
       return res.status(503).json({
-        message: 'WhatsApp सेवा अनुपलब्ध है। कृपया .env में META_WHATSAPP_TOKEN और META_PHONE_ID सेट करें।'
+        message: 'Meta Cloud API कॉन्फ़िगर नहीं है। कृपया "WhatsApp पर सीधे भेजें (मैनुअल)" विकल्प का उपयोग करें।'
       });
     }
 
@@ -133,8 +225,15 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
       return res.status(400).json({ message: 'वैध मतदाता ID और मोबाइल नंबर आवश्यक है।' });
     }
 
+    // Verify credits and deduct 1 credit
+    const creditCheck = await verifyAndDeductCredit(orgId);
+    if (!creditCheck.ok) {
+      return res.status(403).json({ message: creditCheck.error });
+    }
+
     const recipientPhone = normalizePhoneNumber(phoneNumber);
     if (recipientPhone.length < 10) {
+      await refundCredit(orgId);
       return res.status(400).json({ message: 'कृपया 10 अंकों का वैध मोबाइल नंबर दर्ज करें।' });
     }
 
@@ -147,6 +246,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 
     const dbVoter = await Voter.findOne(query).lean();
     if (!dbVoter) {
+      await refundCredit(orgId);
       return res.status(404).json({ message: 'मतदाता रिकॉर्ड नहीं मिला।' });
     }
 
@@ -266,10 +366,102 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
       ).catch(() => {});
     }
 
+    if (!metaAccepted) {
+      await refundCredit(orgId);
+    }
+
     console.error('WhatsApp send error:', err.response?.data || err.message);
     res.status(metaAccepted ? 207 : 500).json({
       message: errorDetail || 'Meta Graph API से WhatsApp संदेश भेजने में त्रुटि हुई।'
     });
+  }
+});
+
+/**
+ * POST /api/whatsapp/send-manual - Deduct 1 credit, record manual dispatch, and generate direct WhatsApp link
+ */
+router.post('/send-manual', verifyToken, requireModule('voters'), async (req, res) => {
+  const orgId = req.user.organizationId || 'org_default';
+  try {
+    const { voterId, phoneNumber } = req.body;
+    if (!voterId || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
+      return res.status(400).json({ message: 'वैध मतदाता ID और मोबाइल नंबर आवश्यक है।' });
+    }
+
+    const creditCheck = await verifyAndDeductCredit(orgId);
+    if (!creditCheck.ok) {
+      return res.status(403).json({ message: creditCheck.error });
+    }
+
+    const recipientPhone = normalizePhoneNumber(phoneNumber);
+    if (recipientPhone.length < 10) {
+      await refundCredit(orgId);
+      return res.status(400).json({ message: 'कृपया 10 अंकों का वैध मोबाइल नंबर दर्ज करें।' });
+    }
+
+    const query = addVoterAccess(req);
+    if (!isNaN(voterId)) {
+      query.sqlId = Number.parseInt(voterId, 10);
+    } else {
+      query._id = voterId;
+    }
+
+    const dbVoter = await Voter.findOne(query).lean();
+    if (!dbVoter) {
+      await refundCredit(orgId);
+      return res.status(404).json({ message: 'मतदाता रिकॉर्ड नहीं मिला।' });
+    }
+
+    const voterName = dbVoter.nameHi || dbVoter.nameEn || 'मतदाता';
+    const ward = (dbVoter.wardNo || '').replace(/^(वार्ड|Ward)\s*/i, '') || '—';
+    const part = (dbVoter.partNo || '').replace(/^(भाग|Part)\s*/i, '') || '—';
+    const serial = dbVoter.serialNo ? `#${dbVoter.serialNo}` : '—';
+    const boothName = dbVoter.boothName || `भाग संख्या ${part}`;
+    const relativeName = dbVoter.relativeNameHi || dbVoter.relativeNameEn || '';
+    const relationType = dbVoter.relationType || 'पिता/पति';
+    const ageGender = `${dbVoter.age || '—'} वर्ष / ${dbVoter.gender || '—'}`;
+
+    const messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
+
+नमस्कार *${voterName}* जी,
+आगामी चुनाव हेतु आपकी मतदाता पर्ची का विवरण:
+
+• *पहचान पत्र क्रमांक (EPIC):* ${dbVoter.epic || '—'}
+• *नाम:* ${voterName}
+${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार्ड क्रमांक:* ${ward}
+• *भाग संख्या:* ${part}
+• *मतदाता सूची क्रमांक:* ${serial}
+• *मतदान केंद्र:* ${boothName}
+• *आयु / लिंग:* ${ageGender}
+
+🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_
+*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
+
+    const dispatch = await SlipDispatch.create({
+      _id: `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      voterId: dbVoter._id,
+      voterEpic: dbVoter.epic,
+      voterName,
+      recipientPhone,
+      status: 'sent',
+      dispatchType: 'manual_whatsapp',
+      organizationId: orgId,
+      sentBy: req.user.fullName || req.user.email || 'Client'
+    });
+
+    const waLink = `https://wa.me/${recipientPhone}?text=${encodeURIComponent(messageText)}`;
+
+    res.json({
+      success: true,
+      message: '1 WhatsApp क्रेडिट काटा गया। WhatsApp चैट खोली जा रही है...',
+      dispatchId: dispatch._id,
+      remainingCredits: creditCheck.remainingCredits,
+      waLink,
+      messageText
+    });
+  } catch (err) {
+    console.error('Manual WhatsApp dispatch error:', err.message);
+    res.status(500).json({ message: 'मैनुअल WhatsApp संदेश तैयार करने में त्रुटि हुई।' });
   }
 });
 

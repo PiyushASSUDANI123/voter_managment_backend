@@ -10,6 +10,9 @@ const organizationSchema = new mongoose.Schema({
   enabledModules: { type: [String], default: [] },
   allowedWards: { type: [String], default: [] },
   isActive: { type: Boolean, default: true },
+  whatsappEnabled: { type: Boolean, default: true },
+  whatsappCredits: { type: Number, default: 100 },
+  whatsappUsed: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -88,6 +91,7 @@ const slipDispatchSchema = new mongoose.Schema({
   voterName: { type: String, required: true },
   recipientPhone: { type: String, required: true },
   slipType: { type: String, enum: ['individual', 'family'], default: 'individual' },
+  dispatchType: { type: String, enum: ['whatsapp', 'manual_whatsapp', 'sms'], default: 'whatsapp' },
   status: { type: String, required: true },
   providerMessageId: { type: String, default: null, index: true },
   errorMessage: { type: String, default: null },
