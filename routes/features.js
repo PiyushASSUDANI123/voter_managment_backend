@@ -470,4 +470,36 @@ router.get('/slip-config', async (req, res) => {
   }
 });
 
+router.put('/slip-config', async (req, res) => {
+  try {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ message: 'केवल एडमिन ही पर्ची ब्रांडिंग बदल सकते हैं।' });
+    }
+    let orgId = req.user?.organizationId || 'org_default';
+    const selected = req.body?.organizationId || req.headers['x-organization-id'] || req.headers['x-client-id'] || req.query?.organizationId;
+    if (selected && selected !== 'all') orgId = selected;
+
+    const incomingConfig = req.body?.slipConfig || req.body;
+    const org = await Organization.findByIdAndUpdate(
+      orgId,
+      {
+        $set: {
+          slipConfig: incomingConfig,
+          ...(incomingConfig?.candidateName ? { candidateName: incomingConfig.candidateName } : {})
+        }
+      },
+      { new: true, upsert: true }
+    );
+    res.json({
+      success: true,
+      organizationId: orgId,
+      organizationName: org?.name || 'Organization',
+      slipConfig: org?.slipConfig || {}
+    });
+  } catch (err) {
+    console.error('Failed to update slip config:', err.message);
+    res.status(500).json({ message: 'Failed to update slip configuration' });
+  }
+});
+
 module.exports = { router, formatVoter };
