@@ -30,7 +30,8 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
         adminCount, activeWorkers, voterCount,
         whatsappEnabled: o.whatsappEnabled !== false,
         whatsappCredits: typeof o.whatsappCredits === 'number' ? o.whatsappCredits : 100,
-        whatsappUsed: typeof o.whatsappUsed === 'number' ? o.whatsappUsed : 0
+        whatsappUsed: typeof o.whatsappUsed === 'number' ? o.whatsappUsed : 0,
+        slipConfig: o.slipConfig || {}
       };
     }));
     
@@ -60,6 +61,7 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
   const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
   const initialCredits = Number.isInteger(Number(req.body.whatsappCredits)) ? Math.max(0, Number(req.body.whatsappCredits)) : 100;
   const isWpEnabled = typeof req.body.whatsappEnabled === 'boolean' ? req.body.whatsappEnabled : true;
+  const slipConfig = req.body.slipConfig && typeof req.body.slipConfig === 'object' ? req.body.slipConfig : {};
   
   const session = await mongoose.startSession();
   try {
@@ -74,7 +76,8 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
       allowedWards: allowedWards,
       whatsappEnabled: isWpEnabled,
       whatsappCredits: initialCredits,
-      whatsappUsed: 0
+      whatsappUsed: 0,
+      slipConfig: slipConfig
     }], { session });
     
     await User.create([{
@@ -127,6 +130,9 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
     if (req.body.whatsappCredits !== undefined) {
       updatePayload.whatsappCredits = Math.max(0, Number.parseInt(req.body.whatsappCredits, 10) || 0);
     }
+    if (req.body.slipConfig && typeof req.body.slipConfig === 'object') {
+      updatePayload.slipConfig = req.body.slipConfig;
+    }
 
     const org = await Organization.findByIdAndUpdate(req.params.id, updatePayload);
     
@@ -135,6 +141,32 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
   } catch (err) {
     console.error('Organization update failed:', err.message);
     res.status(500).json({ message: 'Could not update organization.' });
+  }
+});
+
+router.get('/organizations/:id/slip-config', verifyToken, async (req, res) => {
+  try {
+    const org = await Organization.findById(req.params.id).lean();
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+    res.json(org.slipConfig || {});
+  } catch (err) {
+    res.status(500).json({ message: 'Could not fetch slip configuration.' });
+  }
+});
+
+router.put('/organizations/:id/slip-config', verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.organizationId !== req.params.id) {
+      return res.status(403).json({ message: 'Access denied.' });
+    }
+    const updated = await Organization.findByIdAndUpdate(
+      req.params.id,
+      { $set: { slipConfig: req.body.slipConfig || req.body } },
+      { new: true }
+    );
+    res.json({ success: true, slipConfig: updated?.slipConfig || {} });
+  } catch (err) {
+    res.status(500).json({ message: 'Could not update slip configuration.' });
   }
 });
 
