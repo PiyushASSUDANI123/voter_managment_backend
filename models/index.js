@@ -17,6 +17,8 @@ const organizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {}
   },
+  isDemo: { type: Boolean, default: false },
+  demoPassword: { type: String, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -33,6 +35,8 @@ const userSchema = new mongoose.Schema({
   modules: { type: [String], default: [] },
   organizationId: { type: String, required: true, index: true },
   isActive: { type: Boolean, default: true },
+  isDemo: { type: Boolean, default: false },
+  demoPassword: { type: String, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 

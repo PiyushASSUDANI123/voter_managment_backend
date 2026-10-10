@@ -15,11 +15,29 @@ exports.verifyToken = async (req, res, next) => {
   try {
     const user = await User.findById(claims.user?.id).lean();
     if (!user || user.isActive === false) {
-      return res.status(401).json({ message: 'This account is unavailable or has been disabled.' });
+      return res.status(403).json({
+        code: 'ACCOUNT_SUSPENDED',
+        error: 'Account Suspended',
+        message: 'आपका खाता एडमिन द्वारा बंद (Suspend) किया गया है। कृपया आगे की सेवा के लिए एडमिन से संपर्क करें।',
+        contact: {
+          name: 'Roots Reach Media',
+          phone: '7231077770',
+          formattedPhone: '+91 72310 77770'
+        }
+      });
     }
     const organization = await Organization.findById(user.organizationId).lean();
     if (!organization || organization.isActive === false) {
-      return res.status(403).json({ message: 'This account or organization has been disabled.' });
+      return res.status(403).json({
+        code: 'ACCOUNT_SUSPENDED',
+        error: 'Account Suspended',
+        message: 'आपका संगठन/खाता एडमिन द्वारा बंद (Suspend) किया गया है। कृपया आगे की सेवा के लिए एडमिन से संपर्क करें।',
+        contact: {
+          name: 'Roots Reach Media',
+          phone: '7231077770',
+          formattedPhone: '+91 72310 77770'
+        }
+      });
     }
 
     const enabledModules = user.role === 'admin'

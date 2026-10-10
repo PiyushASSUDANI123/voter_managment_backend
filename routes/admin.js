@@ -692,4 +692,233 @@ router.delete('/leads/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
+// ==========================================
+// DEMO USERS MANAGEMENT & INSTANT LOCKOUT
+// ==========================================
+
+const SAMPLE_DEMO_NAMES = [
+  { hi: 'रामगोपाल शर्मा', en: 'Ramgopal Sharma', relHi: 'मदनलाल शर्मा', relEn: 'Madanlal Sharma', relType: 'पिता', caste: 'ब्राह्मण', house: '14' },
+  { hi: 'कमला देवी शर्मा', en: 'Kamla Devi Sharma', relHi: 'रामगोपाल शर्मा', relEn: 'Ramgopal Sharma', relType: 'पति', caste: 'ब्राह्मण', house: '14' },
+  { hi: 'सुरेश कुमार मीणा', en: 'Suresh Kumar Meena', relHi: 'रामकेश मीणा', relEn: 'Ramkesh Meena', relType: 'पिता', caste: 'मीणा', house: '21' },
+  { hi: 'सुनीता मीणा', en: 'Sunita Meena', relHi: 'सुरेश कुमार मीणा', relEn: 'Suresh Kumar Meena', relType: 'पति', caste: 'मीणा', house: '21' },
+  { hi: 'विजय सिंह शेखावत', en: 'Vijay Singh Shekhawat', relHi: 'प्रताप सिंह', relEn: 'Pratap Singh', relType: 'पिता', caste: 'राजपूत', house: '32' },
+  { hi: 'कौशल्या कंवर', en: 'Kaushalya Kanwar', relHi: 'विजय सिंह शेखावत', relEn: 'Vijay Singh Shekhawat', relType: 'पति', caste: 'राजपूत', house: '32' },
+  { hi: 'राकेश कुमार जाट', en: 'Rakesh Kumar Jat', relHi: 'बलदेव जाट', relEn: 'Baldev Jat', relType: 'पिता', caste: 'जाट', house: '45' },
+  { hi: 'मंजू जाट', en: 'Manju Jat', relHi: 'राकेश कुमार जाट', relEn: 'Rakesh Kumar Jat', relType: 'पति', caste: 'जाट', house: '45' },
+  { hi: 'अब्दुल रशीद खान', en: 'Abdul Rasheed Khan', relHi: 'बशीर खान', relEn: 'Basheer Khan', relType: 'पिता', caste: 'मुस्लिम', house: '58' },
+  { hi: 'शबाना बानो', en: 'Shabana Bano', relHi: 'अब्दुल रशीद खान', relEn: 'Abdul Rasheed Khan', relType: 'पति', caste: 'मुस्लिम', house: '58' },
+  { hi: 'महेश कुमार कुमावत', en: 'Mahesh Kumar Kumawat', relHi: 'गोपाल कुमावत', relEn: 'Gopal Kumawat', relType: 'पिता', caste: 'कुमावत', house: '67' },
+  { hi: 'रेखा कुमावत', en: 'Rekha Kumawat', relHi: 'महेश कुमार कुमावत', relEn: 'Mahesh Kumar Kumawat', relType: 'पति', caste: 'कुमावत', house: '67' },
+  { hi: 'दिनेश कुमार गुर्जर', en: 'Dinesh Kumar Gurjar', relHi: 'रामफूल गुर्जर', relEn: 'Ramphool Gurjar', relType: 'पिता', caste: 'गुर्जर', house: '78' },
+  { hi: 'सीमा गुर्जर', en: 'Seema Gurjar', relHi: 'दिनेश कुमार गुर्जर', relEn: 'Dinesh Kumar Gurjar', relType: 'पति', caste: 'गुर्जर', house: '78' },
+  { hi: 'अशोक कुमार अग्रवाल', en: 'Ashok Kumar Agrawal', relHi: 'मुरारी लाल', relEn: 'Murari Lal', relType: 'पिता', caste: 'वैश्य', house: '92' },
+  { hi: 'शारदा अग्रवाल', en: 'Sharda Agrawal', relHi: 'अशोक कुमार अग्रवाल', relEn: 'Ashok Kumar Agrawal', relType: 'पति', caste: 'वैश्य', house: '92' },
+  { hi: 'विकास कुमार यादव', en: 'Vikas Kumar Yadav', relHi: 'हरिराम यादव', relEn: 'Hariram Yadav', relType: 'पिता', caste: 'यादव', house: '105' },
+  { hi: 'पूजा यादव', en: 'Pooja Yadav', relHi: 'विकास कुमार यादव', relEn: 'Vikas Kumar Yadav', relType: 'पति', caste: 'यादव', house: '105' },
+  { hi: 'प्रकाश चंद वर्मा', en: 'Prakash Chand Verma', relHi: 'किशोरी लाल', relEn: 'Kishori Lal', relType: 'पिता', caste: 'वर्मा / एससी', house: '118' },
+  { hi: 'संतोष वर्मा', en: 'Santosh Verma', relHi: 'प्रकाश चंद वर्मा', relEn: 'Prakash Chand Verma', relType: 'पति', caste: 'वर्मा / एससी', house: '118' },
+  { hi: 'संजय कुमार सैनी', en: 'Sanjay Kumar Saini', relHi: 'भंवर लाल सैनी', relEn: 'Bhanwar Lal Saini', relType: 'पिता', caste: 'माली / सैनी', house: '131' },
+  { hi: 'अनिता सैनी', en: 'Anita Saini', relHi: 'संजय कुमार सैनी', relEn: 'Sanjay Kumar Saini', relType: 'पति', caste: 'माली / सैनी', house: '131' },
+  { hi: 'मुकेश कुमार प्रजापत', en: 'Mukesh Kumar Prajapat', relHi: 'रामस्वरूप', relEn: 'Ramswaroop', relType: 'पिता', caste: 'प्रजापत', house: '144' },
+  { hi: 'सरोज प्रजापत', en: 'Saroj Prajapat', relHi: 'मुकेश कुमार प्रजापत', relEn: 'Mukesh Kumar Prajapat', relType: 'पति', caste: 'प्रजापत', house: '144' },
+  { hi: 'अनिल कुमार सोनी', en: 'Anil Kumar Soni', relHi: 'रतन लाल सोनी', relEn: 'Ratan Lal Soni', relType: 'पिता', caste: 'स्वर्णकार', house: '158' }
+];
+
+// Admin-only: Generate a new Demo User with sample data
+router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { clientName, customEmail, customPassword } = req.body || {};
+    const randomCode = Math.floor(1000 + Math.random() * 9000);
+
+    const email = (customEmail && typeof customEmail === 'string' && customEmail.includes('@'))
+      ? customEmail.trim().toLowerCase()
+      : `demo_${randomCode}@vijaysetu.com`;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ message: 'इस ईमेल से खाता पहले से मौजूद है। कृपया दूसरा ईमेल चुनें।' });
+    }
+
+    const plainPassword = (customPassword && typeof customPassword === 'string' && customPassword.length >= 6)
+      ? customPassword.trim()
+      : `Demo@${randomCode}`;
+
+    const passwordHash = await bcrypt.hash(plainPassword, 10);
+    const orgId = `tenant_demo_${randomCode}`;
+    const name = (clientName && typeof clientName === 'string' && clientName.trim())
+      ? clientName.trim()
+      : `डेमो क्लाइंट #${randomCode}`;
+
+    const demoWards = ['वार्ड 1', 'वार्ड 2', 'वार्ड 3'];
+    const demoModules = ['voters', 'poll-desk', 'turnout', 'warroom', 'history', 'community', 'workers', 'migrants', 'accounts'];
+
+    // 1. Create Demo Organization
+    await Organization.create({
+      _id: orgId,
+      name,
+      enabledModules: demoModules,
+      allowedWards: demoWards,
+      isActive: true,
+      isDemo: true,
+      demoPassword: plainPassword,
+      whatsappEnabled: true,
+      whatsappCredits: 50,
+      whatsappUsed: 0,
+      slipConfig: {
+        candidateName: 'श्री राजेश कुमार शर्मा',
+        candidateParty: 'भारतीय जनता पार्टी (भाजपा)',
+        assemblyConstituency: 'हवामहल (विधानसभा क्षेत्र)',
+        wardNumber: 'वार्ड 1',
+        pollingDate: '25 नवम्बर 2024',
+        appealHeadline: '(1 नंबर पर कमल का फूल का बटन दबाएं)',
+        footerAppeal: 'कमल का बटन दबाएं और भारी मतों से विजयी बनाएं'
+      }
+    });
+
+    // 2. Create Demo User
+    await User.create({
+      _id: `user_demo_${randomCode}`,
+      email,
+      passwordHash,
+      fullName: name,
+      phone: '7231077770',
+      role: 'tenant_admin',
+      organizationId: orgId,
+      isActive: true,
+      isDemo: true,
+      demoPassword: plainPassword
+    });
+
+    // 3. Seed Realistic Demo Voters
+    const supportStatuses = ['core', 'core', 'swing', 'swing', 'opposition', 'unmarked'];
+    const sampleVoters = SAMPLE_DEMO_NAMES.map((item, idx) => {
+      const serialNo = idx + 1;
+      const wardNo = String((idx % 3) + 1);
+      const partNo = String(10 + (idx % 2));
+      const epicPrefix = 'RJX';
+      const epicNum = String(1000000 + randomCode * 100 + serialNo);
+      const isFemale = item.relType === 'पति';
+      const age = 22 + (idx * 3) % 45;
+      const voted = idx % 3 === 0;
+
+      return {
+        _id: `voter_demo_${randomCode}_${serialNo}`,
+        epic: `${epicPrefix}${epicNum.slice(0, 7)}`,
+        wardNo,
+        partNo,
+        serialNo,
+        nameEn: item.en,
+        nameHi: item.hi,
+        age,
+        gender: isFemale ? 'स्त्री' : 'पुरुष',
+        relationType: item.relType,
+        relativeNameEn: item.relEn,
+        relativeNameHi: item.relHi,
+        houseNo: item.house,
+        houseNoHi: item.house,
+        mobileNo: '9829' + String(100000 + serialNo * 1234).slice(0, 6),
+        caste: item.caste,
+        supportStatus: supportStatuses[idx % supportStatuses.length],
+        voted,
+        votedAt: voted ? new Date() : null,
+        surety: idx % 2 === 0 ? 'पक्का' : 'संभावित',
+        notes: idx === 0 ? 'वार्ड के प्रमुख सम्मानित नागरिक' : '',
+        isMigrant: idx === 4 || idx === 12,
+        migrantLocation: idx === 4 ? 'सूरत, गुजरात' : idx === 12 ? 'मुंबई' : '',
+        organizationId: orgId,
+        familyId: `fam_${item.house}`
+      };
+    });
+
+    await Voter.insertMany(sampleVoters);
+
+    res.status(201).json({
+      success: true,
+      message: 'डेमो यूज़र और 25 सैंपल मतदाताओं का डेटा सफलतापूर्वक तैयार किया गया।',
+      demoUser: {
+        id: orgId,
+        name,
+        email,
+        password: plainPassword,
+        isActive: true,
+        voterCount: sampleVoters.length,
+        createdAt: new Date().toISOString()
+      }
+    });
+  } catch (err) {
+    console.error('Failed to create demo user:', err.message);
+    res.status(500).json({ message: 'डेमो यूज़र नहीं बनाया जा सका: ' + err.message });
+  }
+});
+
+// Admin-only: List all Demo Users
+router.get('/demo-users', verifyToken, isAdmin, async (_req, res) => {
+  try {
+    const demoOrgs = await Organization.find({
+      $or: [{ isDemo: true }, { _id: { $regex: '^tenant_demo_' } }]
+    }).sort({ createdAt: -1 }).lean();
+
+    const result = await Promise.all(demoOrgs.map(async (org) => {
+      const user = await User.findOne({ organizationId: org._id, role: 'tenant_admin' }).lean();
+      const voterCount = await Voter.countDocuments({ organizationId: org._id });
+
+      return {
+        id: org._id,
+        name: org.name,
+        email: user?.email || 'N/A',
+        password: user?.demoPassword || org.demoPassword || '—',
+        isActive: org.isActive !== false && user?.isActive !== false,
+        voterCount,
+        createdAt: org.createdAt
+      };
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error('Failed to list demo users:', err.message);
+    res.status(500).json({ message: 'डेमो यूज़र्स लोड नहीं हो सके।' });
+  }
+});
+
+// Admin-only: Suspend or Re-activate Demo User & Org
+router.put('/demo-users/:id/toggle-suspend', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const org = await Organization.findById(id);
+    if (!org) {
+      return res.status(404).json({ message: 'डेमो क्लाइंट नहीं मिला।' });
+    }
+
+    const targetStatus = org.isActive === false; // If currently false, toggle to true; else false
+    await Organization.updateOne({ _id: id }, { $set: { isActive: targetStatus } });
+    await User.updateMany({ organizationId: id }, { $set: { isActive: targetStatus } });
+
+    res.json({
+      success: true,
+      isActive: targetStatus,
+      message: targetStatus
+        ? 'खाता पुनः सक्रिय (Active) कर दिया गया है।'
+        : 'खाता सफलतापूर्वक निलंबित (Suspend) कर दिया गया है। संबंधित स्क्रीन तुरंत ब्लॉक हो जाएगी।'
+    });
+  } catch (err) {
+    console.error('Failed to toggle demo user suspend:', err.message);
+    res.status(500).json({ message: 'स्टेटस अपडेट करने में त्रुटि आई।' });
+  }
+});
+
+// Admin-only: Delete Demo User, Org, and all its Demo Voters
+router.delete('/demo-users/:id', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await Organization.deleteOne({ _id: id });
+    await User.deleteMany({ organizationId: id });
+    await Voter.deleteMany({ organizationId: id });
+
+    res.json({ success: true, message: 'डेमो यूज़र और सभी संबंधित डेटा स्थायी रूप से डिलीट कर दिए गए।' });
+  } catch (err) {
+    console.error('Failed to delete demo user:', err.message);
+    res.status(500).json({ message: 'डेमो यूज़र डिलीट करने में त्रुटि आई।' });
+  }
+});
+
 module.exports = router;

@@ -50,7 +50,16 @@ exports.login = async (req, res) => {
     if (!org) return res.status(403).json({ message: 'Organization not found.' });
     
     if (user.isActive === false || org.isActive === false) {
-      return res.status(403).json({ message: 'This account or organization has been disabled.' });
+      return res.status(403).json({
+        code: 'ACCOUNT_SUSPENDED',
+        error: 'Account Suspended',
+        message: 'आपका खाता एडमिन द्वारा बंद (Suspend) किया गया है। कृपया आगे की सेवा के लिए एडमिन से संपर्क करें।',
+        contact: {
+          name: 'Roots Reach Media',
+          phone: '7231077770',
+          formattedPhone: '+91 72310 77770'
+        }
+      });
     }
 
     // Match password
@@ -183,4 +192,11 @@ exports.changePassword = async (req, res) => {
     console.error('Change password failed:', err.message);
     res.status(500).json({ message: 'Could not change password.' });
   }
+};
+
+exports.getStatus = async (req, res) => {
+  res.json({
+    status: 'active',
+    user: req.user
+  });
 };
