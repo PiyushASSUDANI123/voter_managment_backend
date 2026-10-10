@@ -443,7 +443,7 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
       voterEpic: dbVoter.epic,
       voterName,
       recipientPhone,
-      status: 'sent',
+      status: 'manual_link',
       dispatchType: 'manual_whatsapp',
       organizationId: orgId,
       sentBy: req.user.fullName || req.user.email || 'Client'

@@ -264,7 +264,7 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
     const query = {};
     if (req.user.role !== 'admin') {
       query.organizationId = req.user.organizationId || 'org_default';
-    } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
+    } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim() && req.query.organizationId.trim() !== 'all') {
       query.organizationId = req.query.organizationId.trim();
     }
 
@@ -278,20 +278,38 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
       ];
     }
     if (typeof req.query.status === 'string' && req.query.status) {
-      if (!['sent', 'failed', 'sending'].includes(req.query.status)) {
+      if (req.query.status === 'sent') {
+        // Sirf asli mein gaya ho: verified Meta sent
+        query.status = 'sent';
+        query.dispatchType = { $ne: 'manual_whatsapp' };
+      } else if (req.query.status === 'manual_link') {
+        query.$or = [
+          { dispatchType: 'manual_whatsapp' },
+          { status: 'manual_link' }
+        ];
+      } else if (['failed', 'sending'].includes(req.query.status)) {
+        query.status = req.query.status;
+      } else {
         return res.status(400).json({ message: 'Choose a valid dispatch status.' });
       }
-      query.status = req.query.status;
     }
 
-    const [dispatches, groupedCounts] = await Promise.all([
+    const [dispatches, allInScope] = await Promise.all([
       SlipDispatch.find(query).sort({ createdAt: -1 }).limit(500).lean(),
-      SlipDispatch.aggregate([{ $match: query }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+      SlipDispatch.find(query, { status: 1, dispatchType: 1, providerMessageId: 1 }).lean(),
     ]);
-    const summary = { total: 0, sent: 0, failed: 0, sending: 0 };
-    for (const row of groupedCounts) {
-      summary.total += row.count;
-      if (['sent', 'failed', 'sending'].includes(row._id)) summary[row._id] = row.count;
+
+    const summary = { total: allInScope.length, sent: 0, failed: 0, sending: 0, manual: 0 };
+    for (const row of allInScope) {
+      if (row.dispatchType === 'manual_whatsapp' || row.status === 'manual_link') {
+        summary.manual += 1;
+      } else if (row.status === 'sent' && (row.providerMessageId || row.dispatchType === 'whatsapp')) {
+        summary.sent += 1;
+      } else if (row.status === 'failed') {
+        summary.failed += 1;
+      } else if (row.status === 'sending') {
+        summary.sending += 1;
+      }
     }
 
     res.json({
@@ -302,6 +320,7 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
         epic: item.voterEpic,
         phone: item.recipientPhone,
         slipType: item.slipType || 'individual',
+        dispatchType: item.dispatchType || (item.status === 'manual_link' ? 'manual_whatsapp' : 'whatsapp'),
         status: item.status,
         providerMessageId: item.providerMessageId || null,
         errorMessage: item.errorMessage || '',
@@ -311,6 +330,64 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
   } catch (err) {
     console.error('Dispatch history query failed:', err.message);
     res.status(500).json({ message: 'Dispatch history could not be loaded.' });
+  }
+});
+
+// Single dispatch record delete (Admin / Organization Admin only)
+router.delete('/dispatches/:id', async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenant_admin') {
+      return res.status(403).json({ message: 'Only administrators can delete dispatch records.' });
+    }
+
+    const query = { _id: req.params.id };
+    if (req.user.role !== 'admin') {
+      query.organizationId = req.user.organizationId || 'org_default';
+    }
+
+    const deleted = await SlipDispatch.findOneAndDelete(query);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Dispatch record not found.' });
+    }
+
+    res.json({ success: true, message: 'Dispatch record successfully deleted.' });
+  } catch (err) {
+    console.error('Delete dispatch record failed:', err.message);
+    res.status(500).json({ message: 'Failed to delete dispatch record.' });
+  }
+});
+
+// Bulk or full delete dispatch records (Admin / Organization Admin only)
+router.delete('/dispatches', async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenant_admin') {
+      return res.status(403).json({ message: 'Only administrators can delete dispatch records.' });
+    }
+
+    const { ids, all, organizationId } = req.body || {};
+    const query = {};
+
+    if (req.user.role !== 'admin') {
+      query.organizationId = req.user.organizationId || 'org_default';
+    } else if (typeof organizationId === 'string' && organizationId.trim() && organizationId.trim() !== 'all') {
+      query.organizationId = organizationId.trim();
+    }
+
+    if (Array.isArray(ids) && ids.length > 0) {
+      query._id = { $in: ids };
+    } else if (!all) {
+      return res.status(400).json({ message: 'Specify record IDs or set all: true to clear records.' });
+    }
+
+    const result = await SlipDispatch.deleteMany(query);
+    res.json({
+      success: true,
+      deletedCount: result.deletedCount,
+      message: `${result.deletedCount} dispatch records successfully deleted.`
+    });
+  } catch (err) {
+    console.error('Bulk delete dispatch records failed:', err.message);
+    res.status(500).json({ message: 'Failed to delete dispatch records.' });
   }
 });
 
@@ -348,10 +425,19 @@ router.get('/export.xlsx', async (req, res) => {
         ];
       }
       if (typeof req.query.status === 'string' && req.query.status) {
-        if (!['sent', 'failed', 'sending'].includes(req.query.status)) {
+        if (req.query.status === 'sent') {
+          dispatchQuery.status = 'sent';
+          dispatchQuery.dispatchType = { $ne: 'manual_whatsapp' };
+        } else if (req.query.status === 'manual_link') {
+          dispatchQuery.$or = [
+            { dispatchType: 'manual_whatsapp' },
+            { status: 'manual_link' }
+          ];
+        } else if (['failed', 'sending'].includes(req.query.status)) {
+          dispatchQuery.status = req.query.status;
+        } else {
           return res.status(400).json({ message: 'Choose a valid dispatch status.' });
         }
-        dispatchQuery.status = req.query.status;
       }
       const dispatches = await SlipDispatch.find(dispatchQuery).sort({ createdAt: -1 }).limit(5000).lean();
       const workbook = createWorkbook();
@@ -360,8 +446,10 @@ router.get('/export.xlsx', async (req, res) => {
         'मतदाता': item.voterName,
         'EPIC': item.voterEpic,
         'फोन': item.recipientPhone,
-        'पर्ची प्रकार': item.slipType || 'individual',
-        'स्थिति': item.status,
+        'पर्ची प्रकार': item.slipType === 'family' ? 'परिवार' : 'व्यक्तिगत',
+        'माध्यम': item.dispatchType === 'manual_whatsapp' ? 'मैनुअल लिंक' : 'Meta Cloud API',
+        'स्थिति': item.status === 'sent' ? 'स्वीकारा गया' : item.status === 'manual_link' ? 'मैनुअल लिंक' : item.status === 'failed' ? 'विफल' : 'भेजा जा रहा है',
+        'Meta ID': item.providerMessageId || '',
         'त्रुटि': item.errorMessage || '',
       })));
       return sendWorkbook(res, workbook, 'Dispatch_History');
