@@ -14,18 +14,8 @@ const organizationSchema = new mongoose.Schema({
   whatsappCredits: { type: Number, default: 100 },
   whatsappUsed: { type: Number, default: 0 },
   slipConfig: {
-    candidateName: { type: String, default: '' },
-    candidateNameEn: { type: String, default: '' },
-    partyName: { type: String, default: '' },
-    partySymbolName: { type: String, default: '' },
-    partySymbolImage: { type: String, default: '' },
-    candidateImage: { type: String, default: '' },
-    evmNumber: { type: String, default: '1' },
-    appealHeadline: { type: String, default: '' },
-    appealText: { type: String, default: '' },
-    subTitle: { type: String, default: '' },
-    footerAppeal: { type: String, default: '' },
-    pollingStationFallback: { type: String, default: '' }
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   },
   createdAt: { type: Date, default: Date.now }
 });

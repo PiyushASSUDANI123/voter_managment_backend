@@ -159,10 +159,16 @@ router.put('/organizations/:id/slip-config', verifyToken, async (req, res) => {
     if (req.user.role !== 'admin' && req.user.organizationId !== req.params.id) {
       return res.status(403).json({ message: 'Access denied.' });
     }
+    const incomingConfig = req.body.slipConfig || req.body;
     const updated = await Organization.findByIdAndUpdate(
       req.params.id,
-      { $set: { slipConfig: req.body.slipConfig || req.body } },
-      { new: true }
+      {
+        $set: {
+          slipConfig: incomingConfig,
+          ...(incomingConfig?.candidateName ? { candidateName: incomingConfig.candidateName } : {})
+        }
+      },
+      { new: true, upsert: true }
     );
     res.json({ success: true, slipConfig: updated?.slipConfig || {} });
   } catch (err) {
