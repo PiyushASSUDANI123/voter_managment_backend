@@ -2,7 +2,7 @@ const { parentPort, workerData } = require('worker_threads');
 const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const crypto = require('crypto');
-const { performLocalOCR } = require('../lib/ocrService');
+const { performLocalOCR, cleanHindiText, cleanHouseNo } = require('../lib/ocrService');
 const { isKrutiDevText, convertKrutiDevToUnicode } = require('../lib/krutiDevConverter');
 
 async function processPdf() {
@@ -72,14 +72,28 @@ const ExcelJS = require('exceljs');
             const epic = String(values[2] || '').trim();
             const nameHi = String(values[3] || '').trim();
             if (epic || nameHi) {
+              const cleanName = cleanHindiText(nameHi) || "मतदाता";
+              const cleanRel = cleanHindiText(String(values[4] || ''));
+              const cleanH = cleanHouseNo(String(values[6] || '')) || '1';
+              let ageVal = values[7] ? parseInt(values[7], 10) : null;
+              if (!ageVal || ageVal < 18 || ageVal > 125) ageVal = null;
+              let relType = String(values[5] || '').trim();
+              if (!['पिता', 'पति', 'माता', 'अन्य'].includes(relType)) {
+                relType = 'पिता';
+              }
+              let genderVal = String(values[8] || '').trim();
+              if (!['पुरुष', 'स्त्री'].includes(genderVal)) {
+                genderVal = 'पुरुष';
+              }
+
               finalVoterList.push({
                 epic: epic || `VOTER_${rowNumber - 1}`,
-                nameHi: nameHi || "मतदाता",
-                relativeNameHi: String(values[4] || '').trim(),
-                relationType: String(values[5] || 'पिता').trim(),
-                houseNo: String(values[6] || '').trim(),
-                age: values[7] ? parseInt(values[7], 10) : null,
-                gender: String(values[8] || 'पुरुष').trim(),
+                nameHi: cleanName,
+                relativeNameHi: cleanRel,
+                relationType: relType,
+                houseNo: cleanH,
+                age: ageVal,
+                gender: genderVal,
                 status: String(values[9] || 'Active').trim()
               });
             }

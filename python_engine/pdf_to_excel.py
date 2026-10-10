@@ -59,39 +59,40 @@ def clean_hindi_name(raw: str) -> str:
         return ""
     n = raw.strip()
     
+    # Remove leading OCR noise or label prefixes (e.g. 'ava:', 'ara:', 'नाम:', 'मतदाता का नाम:')
+    n = re.sub(r'^(?:ava|ara|name|no|sl|s)?[:\-]?\s*', '', n, flags=re.IGNORECASE)
+    n = re.sub(r'^(?:[\|\[\(\\\/]*\s*(?:मतदाता\s*का\s*)?(?:नाम|नाम्|नाभ))\s*[:ः\-\. ]\s*', '', n, flags=re.IGNORECASE)
+    
     # Strictly remove English / Latin characters (English not permitted in Hindi name)
-    n = re.sub(r'[a-zA-Z]+', '', n)
+    n = re.sub(r'[a-zA-Z]+', ' ', n)
     
     # Strictly remove digits (numbers not permitted in name)
-    n = re.sub(r'[\d\u0966-\u096F]+', '', n)
+    n = re.sub(r'[\d\u0966-\u096F]+', ' ', n)
     
-    # Strip leading non-Devanagari characters
-    n = re.sub(r'^[^\u0900-\u097F]+', '', n)
+    # Strip non-Devanagari symbols and punctuation
+    n = re.sub(r'[\|\[\]\(\)\{\}«»®©\'\"\‘\’\`\.\,\^°+।॥~!\?=\+\*&%\$#@;:\/\\_\-¢¥<>]+', ' ', n)
     
-    # Noise suffixes and field label bleed
-    noise_suffixes = [
-        r'[\s\|\[\]\(\)\/\\_\-=~:;!\?*&«»®©\{\}\'\"\‘\’\`\.\,\^°+।॥]+$',
-        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|पित|मका|मकान|गृह|आयु|उम्र|लिंग|है|हे|कै|ब्|र्|म्|न्|न|प|व|क)$'
+    # Iteratively remove field labels or bleed suffixes
+    label_bleed = [
+        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|पित|मका|मकान|गृह|आयु|उम्र|लिंग|है|हे|कै|ब्|र्|म्|न्|न|प|व|क|गम|हक)$',
+        r'^(?:श्री|श्रीमती|सुश्री)\s+'
     ]
     
     changed = True
     while changed:
         changed = False
-        n_c = re.sub(r'[\s\|\[\]\(\)\/\\_\-=~:;!\?*&«»®©\{\}\'\"\‘\’\`\.\,\^°+।॥]+$', '', n).strip()
-        if n_c != n:
-            n = n_c
-            changed = True
-            
-        for pat in noise_suffixes:
-            new_n = re.sub(pat, '', n, flags=re.IGNORECASE).strip()
-            if new_n != n:
-                n = new_n
+        n_c = n.strip()
+        for pat in label_bleed:
+            new_n = re.sub(pat, '', n_c, flags=re.IGNORECASE).strip()
+            if new_n != n_c:
+                n_c = new_n
                 changed = True
+        n = n_c
 
     # Strip single trailing fragment when attached to common suffixes
     tokens = n.split()
-    if len(tokens) >= 3 and len(tokens[-1]) <= 3:
-        if tokens[-2] in ['कुमार', 'देवी', 'सिंह', 'लाल', 'राम', 'चंद', 'मल', 'बाई', 'कंवर']:
+    if len(tokens) >= 3 and len(tokens[-1]) <= 2:
+        if tokens[-2] in ['कुमार', 'देवी', 'सिंह', 'लाल', 'राम', 'चंद', 'मल', 'बाई', 'कंवर', 'प्रसाद']:
             tokens.pop()
             n = ' '.join(tokens)
 
@@ -107,12 +108,16 @@ def clean_house_no(raw: str) -> str:
     if not raw:
         return ""
     cleaned = normalize_numerals(raw.strip())
-    # Strip any text labels or word bleed (no textual noise allowed in numeric/house fields)
-    cleaned = re.sub(r'(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे)+', '', cleaned, flags=re.IGNORECASE)
-    # Strip unwanted symbols, keeping only alphanumeric and separator slashes/dashes
-    cleaned = re.sub(r'[^\w\d\/\-]', '', cleaned)
-    cleaned = re.sub(r'^[\/\-]+|[\/\-]+$', '', cleaned)
-    return cleaned.strip()
+    # Strip any text labels or word bleed (no textual noise allowed in house fields)
+    cleaned = re.sub(r'(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY)+', '', cleaned, flags=re.IGNORECASE)
+    # Strip unwanted symbols
+    cleaned = re.sub(r'[%*~_!?:;\'"‘’।॥«»°+={}\[\]()|<>^$&#@,¥]+', '', cleaned).strip()
+    
+    # Isolate number + optional hindi/latin subpart (e.g. 27, 27क, 498A, 12/3)
+    m = re.search(r'(\d+[\/\-]?\d*\s*[क-हA-Za-z]?)', cleaned)
+    if m:
+        return m.group(1).replace(' ', '')
+    return re.sub(r'[^\w\d\/\-]', '', cleaned).strip()
 
 
 def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[str, Any]:
@@ -138,30 +143,38 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
             continue
 
         # 1. Match Relative Name & Relation Type first
-        m_rel = re.search(r'(?:(पिता|पति|माता|अन्य)\s*का\s*नाम)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
+        m_rel = re.search(r'(?:(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
         if m_rel and not relative_name:
             relation_type = m_rel.group(1)
-            relative_name = clean_hindi_name(m_rel.group(2))
+            rel_candidate = clean_hindi_name(m_rel.group(2))
+            if rel_candidate and len(rel_candidate) >= 2 and rel_candidate not in ['है', 'हे', 'की', 'का', 'के']:
+                relative_name = rel_candidate
             continue
 
         # 2. Match Voter Name (unanchored, avoid lines belonging to other fields)
-        if not re.search(r'(?:(पिता|पति|माता|अन्य)\s*का\s*नाम|मकान\s*संख्या|गृह\s*संख्या|आयु\s*[:ः\-]?\s*\d+|लिंग\s*[:ः\-]?)', line):
+        if not re.search(r'(?:(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम|मकान\s*संख्या|गृह\s*संख्या|आयु\s*[:ः\-]?\s*\d+|लिंग\s*[:ः\-])', line):
             m_name = re.search(r'(?:[\|\[\(\\\/]*\s*(?:मतदाता\s*का\s*)?(?:नाम|नाम्|नाभ))\s*[:ः\-\. ]\s*([^\n\r]+)', line, re.IGNORECASE)
             if m_name and not name:
                 cand = m_name.group(1)
                 if not any(w in cand for w in ['क्षेत्र', 'संख्या', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'पिता', 'पति', 'माता']):
-                    name = clean_hindi_name(cand)
+                    name_candidate = clean_hindi_name(cand)
+                    if name_candidate and len(name_candidate) >= 2 and name_candidate not in ['है', 'हे', 'की', 'का']:
+                        name = name_candidate
 
         # 3. Match House No
         m_h = re.search(r'(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
         if m_h and not house_no:
-            house_no = clean_house_no(m_h.group(1))
+            h_candidate = clean_house_no(m_h.group(1))
+            if h_candidate:
+                house_no = h_candidate
 
         # 4. Match Age
-        m_a = re.search(r'(?:आयु|आयू|आय|jag|iag|ay|age)\s*[:ः\-]?\s*(\d+)', line, re.IGNORECASE)
+        m_a = re.search(r'(?:आयु|आयू|आय|उम्र|age)\s*[:ः\-]?\s*(\d+)', line, re.IGNORECASE)
         if m_a and age is None:
             try:
-                age = int(m_a.group(1))
+                a_val = int(m_a.group(1))
+                if 18 <= a_val <= 125:
+                    age = a_val
             except ValueError:
                 pass
 
@@ -180,25 +193,27 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
             if not any(w in line for w in ['पिता', 'पति', 'माता', 'मकान', 'आयु', 'लिंग', 'क्षेत्र', 'संख्या', 'विधानसभा', 'वार्ड', 'SSB', 'RJ/', 'GKV']):
                 dev_chars = len(re.findall(r'[\u0900-\u097F]', line))
                 if dev_chars >= 3:
-                    name = clean_hindi_name(line)
-                    break
+                    cand = clean_hindi_name(line)
+                    if cand and len(cand) >= 2 and cand not in ['है', 'हे']:
+                        name = cand
+                        break
 
-    # Fallback for house number from digital text stream if available
+    # Fallbacks from digital text stream when available (recovers watermarked/smudged cards)
     if not house_no and digital_card_text:
-        m_h_dig = re.search(r'मकरन\s*सनखजर:?\s*(\S+)', digital_card_text)
+        m_h_dig = re.search(r'मकरन\s*सनखजर:?\s*(\d+[कखगघA-Za-z]?)', digital_card_text)
         if m_h_dig:
             house_no = clean_house_no(m_h_dig.group(1))
 
-    # Fallback for age from digital text stream if available
     if age is None and digital_card_text:
         m_a_dig = re.search(r'आजच:?\s*(\d+)', digital_card_text)
         if m_a_dig:
             try:
-                age = int(m_a_dig.group(1))
+                a_val = int(m_a_dig.group(1))
+                if 18 <= a_val <= 125:
+                    age = a_val
             except ValueError:
                 pass
 
-    # Fallback for gender from digital text stream
     if digital_card_text:
         if 'पचरष' in digital_card_text:
             gender = "पुरुष"
@@ -236,13 +251,11 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
     # =========================================================================
     # PATH A: ANCHOR-BOX EXTRACTION (High-Precision 1:1 Isolated Card Bounds)
     # =========================================================================
-    epic_found_count = 0
     for ep in page_epics:
         rects = page.search_for(ep)
         if not rects:
             continue
         
-        epic_found_count += 1
         ep_r = rects[0]
 
         # Calculate bounding box for this single card
@@ -256,9 +269,9 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
         digital_words = page.get_text('words', clip=card_rect)
         digital_card_text = ' '.join(w[4] for w in digital_words)
 
-        # Isolated text area crop (left 72% of card, avoiding photo box noise)
-        text_rect = fitz.Rect(card_x0 + 2, card_y0 + 12, card_x0 + 174 * 0.72, card_y1 - 3)
-        pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=text_rect)
+        # Isolated text area crop (left 75.5% of card, starting at y0 + 16.5 to skip top serial divider)
+        text_rect = fitz.Rect(card_x0 + 1.5, card_y0 + 16.5, card_x0 + 174.0 * 0.755, card_y1 - 2.0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=text_rect)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
 
         card_data = extract_card_content(img, digital_card_text=digital_card_text)
