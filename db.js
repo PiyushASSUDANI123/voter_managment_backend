@@ -5,13 +5,15 @@ const bcrypt = require('bcryptjs');
 
 const ensureSchema = async () => {
   try {
-    await Organization.findByIdAndUpdate('org_default', {
-      $setOnInsert: {
-        name: 'Default Organization',
+    const orgCount = await Organization.countDocuments({ isActive: true });
+    if (orgCount === 0) {
+      await Organization.create({
+        _id: 'org_developer_test',
+        name: 'Developer Test Organization',
         enabledModules: ['voters', 'poll-desk', 'turnout', 'warroom', 'history', 'community', 'workers', 'migrants', 'accounts'],
         isActive: true,
-      },
-    }, { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true });
+      });
+    }
 
     const bootstrapEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
     const bootstrapPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
@@ -34,7 +36,7 @@ const ensureSchema = async () => {
           fullName: bootstrapName,
           phone: bootstrapPhone,
           role: 'admin',
-          organizationId: 'org_default',
+          organizationId: 'org_developer_test',
           isActive: true,
         });
       }

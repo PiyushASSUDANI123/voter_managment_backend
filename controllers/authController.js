@@ -123,7 +123,7 @@ exports.getClients = async (req, res) => {
   try {
     const isPlatformAdmin = req.user.role === 'admin';
     if (isPlatformAdmin) {
-      const orgs = await Organization.find({ isActive: { $ne: false } }).sort({ name: 1 }).lean();
+      const orgs = await Organization.find({ isActive: { $ne: false }, _id: { $ne: 'org_default' } }).sort({ name: 1 }).lean();
       const orgIds = orgs.map((o) => o._id);
       const voterCounts = await Voter.aggregate([
         { $match: { organizationId: { $in: orgIds } } },

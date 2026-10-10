@@ -749,7 +749,7 @@ router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
       ? clientName.trim()
       : `डेमो क्लाइंट #${randomCode}`;
 
-    const demoWards = ['वार्ड 1', 'वार्ड 2', 'वार्ड 3'];
+    const demoWards = [];
     const demoModules = ['voters', 'poll-desk', 'turnout', 'warroom', 'history', 'community', 'workers', 'migrants', 'accounts'];
 
     // 1. Create Demo Organization
