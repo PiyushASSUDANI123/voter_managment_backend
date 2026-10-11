@@ -210,10 +210,20 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
   const orgId = req.user.organizationId || 'org_default';
 
   try {
-    const { voterId, phoneNumber, templateName } = req.body;
+    let { voterId, phoneNumber, templateName } = req.body;
     const token = process.env.META_WHATSAPP_TOKEN?.trim();
     const phoneNumberId = process.env.META_PHONE_ID?.trim();
     const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+
+    // Auto-resolve active Meta template if not passed explicitly
+    if (!templateName) {
+      const org = await Organization.findById(orgId).lean();
+      templateName = org?.whatsappConfig?.templateName || org?.slipConfig?.whatsappTemplateName;
+      if (!templateName) {
+        const defaultOrg = await Organization.findById('org_default').lean();
+        templateName = defaultOrg?.whatsappConfig?.templateName || defaultOrg?.slipConfig?.whatsappTemplateName || 'voter_slip_dispatch';
+      }
+    }
 
     if (!token || !phoneNumberId) {
       return res.status(503).json({
@@ -492,6 +502,328 @@ router.get('/history', verifyToken, requireModule('voters'), async (req, res) =>
   } catch (err) {
     console.error('Dispatch history failed:', err.message);
     res.status(500).json({ message: 'पर्ची इतिहास लोड नहीं हुआ।' });
+  }
+});
+
+const DEFAULT_PRESET_TEMPLATES = [
+  {
+    name: 'voter_slip_dispatch',
+    status: 'APPROVED',
+    category: 'UTILITY',
+    language: 'hi',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'डिजिटल मतदाता सूचना पर्ची 🗳️'
+      },
+      {
+        type: 'BODY',
+        text: 'नमस्कार {{1}} जी,\n\nआपकी डिजिटल मतदाता सूचना पर्ची विवरण:\n• पहचान पत्र (EPIC): {{2}}\n• वार्ड संख्या: {{3}}\n• भाग संख्या: {{4}}\n• क्रमांक संख्या: #{{5}}\n• मतदान केंद्र: {{6}}\n\nकृपया मतदान दिवस पर अपना पहचान पत्र साथ लाएं। आपका वोट, आपका अधिकार!',
+        example: {
+          body_text: [
+            ['रमेश कुमार', 'RJ/17/105/012345', '12', '45', '142', 'राजकीय उच्च प्राथमिक विद्यालय']
+          ]
+        }
+      },
+      {
+        type: 'FOOTER',
+        text: 'विजयसेतु चुनावी प्रबंधन'
+      }
+    ]
+  },
+  {
+    name: 'election_day_reminder_hi',
+    status: 'APPROVED',
+    category: 'UTILITY',
+    language: 'hi',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'मतदान दिवस स्मरण 🗳️'
+      },
+      {
+        type: 'BODY',
+        text: 'प्रिय {{1}} जी,\n\nआज मतदान का दिन है! आपका मतदान केंद्र {{2}} है। आपका क्रमांक संख्या #{{3}} है। कृपया अपने परिवार सहित मतदान केंद्र पहुंचकर अपने मताधिकार का प्रयोग करें।',
+        example: {
+          body_text: [
+            ['सुनीता देवी', 'सामुदायिक भवन, कक्ष 2', '89']
+          ]
+        }
+      },
+      {
+        type: 'FOOTER',
+        text: 'लोकतंत्र का महापर्व'
+      }
+    ]
+  },
+  {
+    name: 'booth_station_info_hi',
+    status: 'APPROVED',
+    category: 'UTILITY',
+    language: 'hi',
+    components: [
+      {
+        type: 'HEADER',
+        format: 'TEXT',
+        text: 'मतदान केंद्र एवं सहायता सूचना'
+      },
+      {
+        type: 'BODY',
+        text: 'नमस्कार {{1}} जी,\n\nआपके क्षेत्र का मतदान केंद्र {{2}} (भाग संख्या {{3}}) है। किसी भी सहायता या वाहन सुविधा के लिए हमारे बूथ कार्यकर्ता से संपर्क करें।',
+        example: {
+          body_text: [
+            ['विक्रम सिंह', 'राजकीय उच्च प्राथमिक विद्यालय', '4']
+          ]
+        }
+      }
+    ]
+  }
+];
+
+/**
+ * GET /api/whatsapp/templates - Fetch Meta templates (live from Meta Graph API or presets)
+ */
+router.get('/templates', verifyToken, async (req, res) => {
+  try {
+    const orgId = req.query.organizationId || req.user.organizationId || 'org_default';
+    const org = await Organization.findById(orgId).lean();
+    const activeTemplate = org?.whatsappConfig?.templateName || org?.slipConfig?.whatsappTemplateName || 'voter_slip_dispatch';
+    const activeLanguage = org?.whatsappConfig?.templateLanguage || 'hi';
+
+    const token = process.env.META_WHATSAPP_TOKEN?.trim();
+    const phoneNumberId = process.env.META_PHONE_ID?.trim();
+    const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+
+    let metaTemplates = [];
+    let isLiveFromMeta = false;
+
+    if (token && phoneNumberId) {
+      try {
+        const phoneRes = await axios.get(
+          `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}?fields=whatsapp_business_account`,
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 5000 }
+        );
+        const wabaId = phoneRes.data?.whatsapp_business_account?.id;
+        
+        if (wabaId) {
+          const tmplRes = await axios.get(
+            `https://graph.facebook.com/${graphApiVersion}/${wabaId}/message_templates?limit=100`,
+            { headers: { Authorization: `Bearer ${token}` }, timeout: 6000 }
+          );
+          if (Array.isArray(tmplRes.data?.data) && tmplRes.data.data.length > 0) {
+            metaTemplates = tmplRes.data.data;
+            isLiveFromMeta = true;
+          }
+        }
+      } catch (metaErr) {
+        console.warn('Could not fetch live templates from Meta Graph API:', metaErr.message);
+      }
+    }
+
+    const combined = [...metaTemplates];
+    for (const preset of DEFAULT_PRESET_TEMPLATES) {
+      if (!combined.some(t => t.name.toLowerCase() === preset.name.toLowerCase())) {
+        combined.push(preset);
+      }
+    }
+
+    res.json({
+      success: true,
+      activeTemplate,
+      activeLanguage,
+      isLiveFromMeta,
+      organizationId: orgId,
+      organizationName: org?.name || 'Default Organization',
+      templates: combined
+    });
+  } catch (err) {
+    console.error('Error fetching templates:', err.message);
+    res.status(500).json({ message: 'टेम्पलेट्स लोड नहीं हो पाए।' });
+  }
+});
+
+/**
+ * POST /api/whatsapp/templates/select-active - Select the active template for an organization or globally
+ */
+router.post('/templates/select-active', verifyToken, async (req, res) => {
+  try {
+    const { organizationId, templateName, templateLanguage } = req.body;
+    if (!templateName) {
+      return res.status(400).json({ message: 'टेम्पलेट का नाम आवश्यक है।' });
+    }
+
+    const targetOrgId = organizationId || req.user.organizationId || 'org_default';
+
+    await Organization.updateOne(
+      { _id: targetOrgId },
+      {
+        $set: {
+          'whatsappConfig.templateName': templateName.trim(),
+          'whatsappConfig.templateLanguage': templateLanguage || 'hi',
+          'slipConfig.whatsappTemplateName': templateName.trim()
+        }
+      },
+      { upsert: true }
+    );
+
+    res.json({
+      success: true,
+      message: `Meta टेम्पलेट '${templateName}' सफलतापूर्वक सक्रिय (Active) कर दिया गया है।`,
+      activeTemplate: templateName,
+      activeLanguage: templateLanguage || 'hi'
+    });
+  } catch (err) {
+    console.error('Error selecting active template:', err.message);
+    res.status(500).json({ message: 'टेम्पलेट सक्रिय नहीं किया जा सका।' });
+  }
+});
+
+/**
+ * POST /api/whatsapp/templates/create - Submit new template to Meta Cloud API
+ */
+router.post('/templates/create', verifyToken, async (req, res) => {
+  try {
+    const { name, category, language, bodyText, headerText, footerText } = req.body;
+    if (!name || !bodyText) {
+      return res.status(400).json({ message: 'टेम्पलेट का नाम और बॉडी टेक्स्ट आवश्यक है।' });
+    }
+
+    const cleanName = name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const token = process.env.META_WHATSAPP_TOKEN?.trim();
+    const phoneNumberId = process.env.META_PHONE_ID?.trim();
+    const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+
+    if (!token || !phoneNumberId) {
+      return res.status(400).json({
+        message: 'Meta API Credentials कॉन्फ़िगर नहीं हैं। आप दिए गए स्वीकृत टेम्पलेट्स में से एक्टिव टेम्पलेट चुन सकते हैं।'
+      });
+    }
+
+    const phoneRes = await axios.get(
+      `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}?fields=whatsapp_business_account`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const wabaId = phoneRes.data?.whatsapp_business_account?.id;
+    if (!wabaId) {
+      return res.status(400).json({ message: 'Meta WhatsApp Business Account (WABA) नहीं मिला।' });
+    }
+
+    const components = [];
+    if (headerText) {
+      components.push({ type: 'HEADER', format: 'TEXT', text: headerText });
+    }
+    
+    const params = bodyText.match(/\{\{\d+\}\}/g);
+    const exampleBody = params ? params.map((_, idx) => `नमूना मान ${idx + 1}`) : [];
+
+    components.push({
+      type: 'BODY',
+      text: bodyText,
+      ...(exampleBody.length > 0 ? { example: { body_text: [exampleBody] } } : {})
+    });
+
+    if (footerText) {
+      components.push({ type: 'FOOTER', text: footerText });
+    }
+
+    const metaPayload = {
+      name: cleanName,
+      category: category || 'UTILITY',
+      language: language || 'hi',
+      components
+    };
+
+    const createRes = await axios.post(
+      `https://graph.facebook.com/${graphApiVersion}/${wabaId}/message_templates`,
+      metaPayload,
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+
+    res.json({
+      success: true,
+      message: `Meta टेम्पलेट '${cleanName}' सफलतापूर्वक सबमिट कर दिया गया।`,
+      metaResponse: createRes.data
+    });
+  } catch (err) {
+    const errorMsg = err.response?.data?.error?.message || err.message;
+    console.error('Meta Template Creation Error:', errorMsg);
+    res.status(400).json({ message: `Meta टेम्पलेट निर्माण त्रुटि: ${errorMsg}` });
+  }
+});
+
+/**
+ * POST /api/whatsapp/templates/test-send - Test sending the active template to a mobile number
+ */
+router.post('/templates/test-send', verifyToken, async (req, res) => {
+  try {
+    const { phoneNumber, templateName, templateLanguage } = req.body;
+    if (!phoneNumber) {
+      return res.status(400).json({ message: 'परीक्षण हेतु 10 अंकों का मोबाइल नंबर दर्ज करें।' });
+    }
+
+    const recipientPhone = normalizePhoneNumber(phoneNumber);
+    if (recipientPhone.length < 10) {
+      return res.status(400).json({ message: 'कृपया 10 अंकों का वैध मोबाइल नंबर दर्ज करें।' });
+    }
+
+    const token = process.env.META_WHATSAPP_TOKEN?.trim();
+    const phoneNumberId = process.env.META_PHONE_ID?.trim();
+    const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+
+    if (!token || !phoneNumberId) {
+      return res.status(400).json({ message: 'Meta WhatsApp Token या Phone ID कॉन्फ़िगर नहीं है।' });
+    }
+
+    const tmplName = templateName || 'voter_slip_dispatch';
+    const lang = templateLanguage || 'hi';
+
+    const testPayload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: recipientPhone,
+      type: 'template',
+      template: {
+        name: tmplName,
+        language: { code: lang },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: 'परीक्षण मतदाता' },
+              { type: 'text', text: 'TEST0000001' },
+              { type: 'text', text: '12' },
+              { type: 'text', text: '45' },
+              { type: 'text', text: '1' },
+              { type: 'text', text: 'राजकीय आदर्श विद्यालय' }
+            ]
+          }
+        ]
+      }
+    };
+
+    const response = await axios.post(
+      `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+      testPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
+
+    res.json({
+      success: true,
+      message: `परीक्षण संदेश ${phoneNumber} पर सफलतापूर्वक भेजा गया!`,
+      messageId: response.data?.messages?.[0]?.id
+    });
+  } catch (err) {
+    const errorMsg = err.response?.data?.error?.message || err.message;
+    console.error('Test Send Error:', errorMsg);
+    res.status(400).json({ message: `परीक्षण विफल: ${errorMsg}` });
   }
 });
 
