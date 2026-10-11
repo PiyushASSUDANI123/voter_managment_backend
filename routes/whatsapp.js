@@ -1,9 +1,100 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const { verifyToken, requireModule } = require('../middleware/authMiddleware');
+const fs = require('fs');
+const path = require('path');
+const { verifyToken, requireModule, isAdmin } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
 const { Voter, SlipDispatch, Organization } = require('../models/index');
+
+/**
+ * Resolve effective Meta configuration (Token, Phone ID, WABA ID)
+ * Priorities: Organization level -> org_default -> process.env
+ */
+async function getEffectiveMetaConfig(orgId) {
+  let org = null;
+  let defaultOrg = null;
+  try {
+    if (orgId) {
+      org = await Organization.findById(orgId).lean();
+    }
+    if (orgId !== 'org_default') {
+      defaultOrg = await Organization.findById('org_default').lean();
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  const token = (org?.whatsappConfig?.token || defaultOrg?.whatsappConfig?.token || process.env.META_WHATSAPP_TOKEN || '').trim();
+  const phoneNumberId = (org?.whatsappConfig?.phoneNumberId || defaultOrg?.whatsappConfig?.phoneNumberId || process.env.META_PHONE_ID || '').trim();
+  const wabaId = (org?.whatsappConfig?.wabaId || defaultOrg?.whatsappConfig?.wabaId || process.env.META_WABA_ID || '').trim();
+  const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+  const templateName = org?.whatsappConfig?.templateName || org?.slipConfig?.whatsappTemplateName || defaultOrg?.whatsappConfig?.templateName || defaultOrg?.slipConfig?.whatsappTemplateName || 'voter_slip_dispatch';
+  const templateLanguage = org?.whatsappConfig?.templateLanguage || defaultOrg?.whatsappConfig?.templateLanguage || 'hi';
+
+  return { token, phoneNumberId, wabaId, graphApiVersion, templateName, templateLanguage };
+}
+
+/**
+ * Save rendered voter slip base64 image to disk
+ */
+function saveSlipImage(dispatchId, dataUrl) {
+  if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    return null;
+  }
+  try {
+    const matches = dataUrl.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+    if (!matches) return null;
+    const rawExt = matches[1].toLowerCase();
+    const ext = rawExt.includes('jpeg') ? 'jpg' : rawExt.includes('png') ? 'png' : 'webp';
+    const buffer = Buffer.from(matches[2], 'base64');
+    const filename = `slip_${dispatchId}.${ext}`;
+    const targetDir = path.join(__dirname, '../uploads/slips');
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    const filePath = path.join(targetDir, filename);
+    fs.writeFileSync(filePath, buffer);
+    return {
+      filename,
+      buffer,
+      ext,
+      mimeType: `image/${ext === 'jpg' ? 'jpeg' : ext}`,
+      size: buffer.length
+    };
+  } catch (err) {
+    console.warn('Failed to save slip image:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Upload image buffer to Meta WhatsApp Media API
+ */
+async function uploadMediaToMeta({ token, phoneNumberId, buffer, mimeType, filename }) {
+  if (!token || !phoneNumberId || !buffer) return null;
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('file', new Blob([buffer], { type: mimeType || 'image/png' }), filename || 'voter_slip.png');
+    form.append('type', mimeType || 'image/png');
+
+    const res = await axios.post(
+      `https://graph.facebook.com/v20.0/${phoneNumberId}/media`,
+      form,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        timeout: 20000,
+      }
+    );
+    return res.data?.id || null;
+  } catch (err) {
+    console.warn('Meta media upload failed:', err.response?.data || err.message);
+    return null;
+  }
+}
 
 /**
  * Standardize recipient phone number for WhatsApp Meta API (E.164 without '+')
@@ -202,7 +293,7 @@ router.post('/webhook', async (req, res) => {
 });
 
 /**
- * POST /api/whatsapp/send-slip - Send digital voter slip via Meta Cloud API
+ * POST /api/whatsapp/send-slip - Send digital voter slip via Meta Cloud API (Supports photo & template)
  */
 router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res) => {
   let dispatchId = null;
@@ -210,24 +301,19 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
   const orgId = req.user.organizationId || 'org_default';
 
   try {
-    let { voterId, phoneNumber, templateName } = req.body;
-    const token = process.env.META_WHATSAPP_TOKEN?.trim();
-    const phoneNumberId = process.env.META_PHONE_ID?.trim();
-    const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+    let { voterId, phoneNumber, templateName, slipImageDataUrl } = req.body;
+    const metaConfig = await getEffectiveMetaConfig(orgId);
+    const token = metaConfig.token;
+    const phoneNumberId = metaConfig.phoneNumberId;
+    const graphApiVersion = metaConfig.graphApiVersion || 'v20.0';
 
-    // Auto-resolve active Meta template if not passed explicitly
     if (!templateName) {
-      const org = await Organization.findById(orgId).lean();
-      templateName = org?.whatsappConfig?.templateName || org?.slipConfig?.whatsappTemplateName;
-      if (!templateName) {
-        const defaultOrg = await Organization.findById('org_default').lean();
-        templateName = defaultOrg?.whatsappConfig?.templateName || defaultOrg?.slipConfig?.whatsappTemplateName || 'voter_slip_dispatch';
-      }
+      templateName = metaConfig.templateName;
     }
 
     if (!token || !phoneNumberId) {
       return res.status(503).json({
-        message: 'Meta Cloud API कॉन्फ़िगर नहीं है। कृपया "WhatsApp पर सीधे भेजें (मैनुअल)" विकल्प का उपयोग करें।'
+        message: 'Meta Cloud API कॉन्फ़िगर नहीं है। कृपया सुपर एडमिन में Meta टोकन व Phone ID दर्ज करें या "डायरेक्ट WhatsApp" का उपयोग करें।'
       });
     }
 
@@ -263,6 +349,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
     const voterName = dbVoter.nameHi || dbVoter.nameEn || 'मतदाता';
     const ward = (dbVoter.wardNo || '').replace(/^(वार्ड|Ward)\s*/i, '') || '—';
     const part = (dbVoter.partNo || '').replace(/^(भाग|Part)\s*/i, '') || '—';
+    const serial = dbVoter.serialNo ? `#${dbVoter.serialNo}` : '—';
     const boothName = dbVoter.boothName || `भाग संख्या ${part}`;
 
     // Create Dispatch record in DB (strictly bound to user's organization)
@@ -273,87 +360,176 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
       voterName,
       recipientPhone,
       status: 'sending',
-      organizationId: req.user.organizationId || 'org_default',
+      organizationId: orgId,
       sentBy: req.user.fullName || req.user.email || 'Client'
     });
     dispatchId = dispatch._id;
 
-    // Compose payload: Template vs Text
-    let messagePayload;
-
-    if (templateName) {
-      // Approved Meta WhatsApp Template Message (Required for business-initiated chats)
-      messagePayload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: recipientPhone,
-        type: 'template',
-        template: {
-          name: templateName,
-          language: { code: 'hi' },
-          components: [
-            {
-              type: 'body',
-              parameters: [
-                { type: 'text', text: voterName },
-                { type: 'text', text: dbVoter.epic || '—' },
-                { type: 'text', text: ward },
-                { type: 'text', text: part },
-                { type: 'text', text: String(dbVoter.serialNo || '—') },
-                { type: 'text', text: boothName }
-              ]
-            }
-          ]
-        }
-      };
-    } else {
-      // Free-form Hindi message
-      const messageText = `नमस्कार,
-
-*${voterName}*
-• पहचान पत्र (EPIC): *${dbVoter.epic || '—'}*
-• वार्ड: *${ward}* · क्रमांक: *#${dbVoter.serialNo || '—'}*
-• मतदान केंद्र: *${boothName}*
-
-आपकी डिजिटल मतदाता सूचना पर्ची (Voter Slip) संलग्न है। 🗳️
-मतदान हमारा अधिकार एवं कर्तव्य है। कृपया मतदान दिवस पर अपना पहचान पत्र (Voter ID / आधार कार्ड) साथ लाएं।
-
-धन्यवाद! 🙏`;
-
-      messagePayload = {
-        messaging_product: 'whatsapp',
-        recipient_type: 'individual',
-        to: recipientPhone,
-        type: 'text',
-        text: { preview_url: false, body: messageText }
-      };
+    // Handle slip image saving
+    let savedImage = null;
+    let mediaId = null;
+    let publicImageUrl = null;
+    if (slipImageDataUrl) {
+      savedImage = saveSlipImage(dispatchId, slipImageDataUrl);
+      if (savedImage) {
+        publicImageUrl = `${req.protocol}://${req.get('host')}/uploads/slips/${savedImage.filename}`;
+        mediaId = await uploadMediaToMeta({
+          token,
+          phoneNumberId,
+          buffer: savedImage.buffer,
+          mimeType: savedImage.mimeType,
+          filename: savedImage.filename
+        });
+      }
     }
 
-    const response = await axios.post(
-      `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
-      messagePayload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000,
+    const messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
+
+नमस्कार *${voterName}* जी,
+आपकी डिजिटल मतदाता सूचना पर्ची विवरण:
+
+• पहचान पत्र (EPIC): *${dbVoter.epic || '—'}*
+• नाम: *${voterName}*
+• वार्ड: *${ward}* · भाग संख्या: *${part}*
+• मतदाता सूची क्रमांक: *${serial}*
+• मतदान केंद्र: *${boothName}*
+
+🇮🇳 मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।
+*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
+
+    let response;
+    let lastError = null;
+
+    // 1. If we have uploaded image to Meta media, try sending template with image header or image message
+    if (mediaId) {
+      if (templateName) {
+        try {
+          const templatePayload = {
+            messaging_product: 'whatsapp',
+            recipient_type: 'individual',
+            to: recipientPhone,
+            type: 'template',
+            template: {
+              name: templateName,
+              language: { code: 'hi' },
+              components: [
+                {
+                  type: 'header',
+                  parameters: [
+                    { type: 'image', image: { id: mediaId } }
+                  ]
+                },
+                {
+                  type: 'body',
+                  parameters: [
+                    { type: 'text', text: voterName },
+                    { type: 'text', text: dbVoter.epic || '—' },
+                    { type: 'text', text: ward },
+                    { type: 'text', text: part },
+                    { type: 'text', text: String(dbVoter.serialNo || '—') },
+                    { type: 'text', text: boothName }
+                  ]
+                }
+              ]
+            }
+          };
+          response = await axios.post(
+            `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+            templatePayload,
+            { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
+          );
+        } catch (tmplErr) {
+          console.warn('Template with image header not supported by template, falling back to body template or image message:', tmplErr.response?.data?.error?.message || tmplErr.message);
+          lastError = tmplErr;
+        }
       }
-    );
+
+      if (!response) {
+        try {
+          // Send direct image message with caption
+          response = await axios.post(
+            `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+            {
+              messaging_product: 'whatsapp',
+              recipient_type: 'individual',
+              to: recipientPhone,
+              type: 'image',
+              image: {
+                id: mediaId,
+                caption: messageText
+              }
+            },
+            { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
+          );
+        } catch (imgMsgErr) {
+          console.warn('Direct image message send failed (likely 24h window), falling back to standard template:', imgMsgErr.response?.data?.error?.message || imgMsgErr.message);
+          lastError = imgMsgErr;
+        }
+      }
+    }
+
+    // 2. Fallback to standard approved template or text message
+    if (!response) {
+      let messagePayload;
+      if (templateName) {
+        messagePayload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: recipientPhone,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: { code: 'hi' },
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: voterName },
+                  { type: 'text', text: dbVoter.epic || '—' },
+                  { type: 'text', text: ward },
+                  { type: 'text', text: part },
+                  { type: 'text', text: String(dbVoter.serialNo || '—') },
+                  { type: 'text', text: boothName }
+                ]
+              }
+            ]
+          }
+        };
+      } else {
+        const fullText = publicImageUrl
+          ? `${messageText}\n\n🖼️ *डिजिटल पर्ची फोटो:*\n${publicImageUrl}`
+          : messageText;
+        messagePayload = {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: recipientPhone,
+          type: 'text',
+          text: { preview_url: true, body: fullText }
+        };
+      }
+
+      response = await axios.post(
+        `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+        messagePayload,
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
+      );
+    }
 
     metaAccepted = true;
     const providerMessageId = response.data?.messages?.[0]?.id;
 
     await SlipDispatch.updateOne(
       { _id: dispatchId },
-      { $set: { status: 'sent', providerMessageId } }
+      { $set: { status: 'sent', providerMessageId, slipImageUrl: publicImageUrl } }
     );
 
     res.json({
       success: true,
-      message: 'WhatsApp पर्ची सफलतापूर्वक भेज दी गई है।',
+      message: savedImage ? 'WhatsApp पर्ची फोटो व विवरण सफलतापूर्वक भेज दिया गया है!' : 'WhatsApp पर्ची सफलतापूर्वक भेज दी गई है।',
       dispatchId,
-      providerMessageId
+      providerMessageId,
+      slipImageUrl: publicImageUrl,
+      hasPhoto: Boolean(savedImage)
     });
 
   } catch (err) {
@@ -388,12 +564,12 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 });
 
 /**
- * POST /api/whatsapp/send-manual - Deduct 1 credit, record manual dispatch, and generate direct WhatsApp link
+ * POST /api/whatsapp/send-manual - Deduct 1 credit, record manual dispatch, save slip image, and generate direct WhatsApp link
  */
 router.post('/send-manual', verifyToken, requireModule('voters'), async (req, res) => {
   const orgId = req.user.organizationId || 'org_default';
   try {
-    const { voterId, phoneNumber } = req.body;
+    const { voterId, phoneNumber, slipImageDataUrl } = req.body;
     if (!voterId || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
       return res.status(400).json({ message: 'वैध मतदाता ID और मोबाइल नंबर आवश्यक है।' });
     }
@@ -431,22 +607,6 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
     const relationType = dbVoter.relationType || 'पिता/पति';
     const ageGender = `${dbVoter.age || '—'} वर्ष / ${dbVoter.gender || '—'}`;
 
-    const messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
-
-नमस्कार *${voterName}* जी,
-आगामी चुनाव हेतु आपकी मतदाता पर्ची का विवरण:
-
-• *पहचान पत्र क्रमांक (EPIC):* ${dbVoter.epic || '—'}
-• *नाम:* ${voterName}
-${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार्ड क्रमांक:* ${ward}
-• *भाग संख्या:* ${part}
-• *मतदाता सूची क्रमांक:* ${serial}
-• *मतदान केंद्र:* ${boothName}
-• *आयु / लिंग:* ${ageGender}
-
-🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_
-*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
-
     const dispatch = await SlipDispatch.create({
       _id: `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       voterId: dbVoter._id,
@@ -459,15 +619,47 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
       sentBy: req.user.fullName || req.user.email || 'Client'
     });
 
+    // Save image if passed
+    let savedImage = null;
+    let publicImageUrl = null;
+    if (slipImageDataUrl) {
+      savedImage = saveSlipImage(dispatch._id, slipImageDataUrl);
+      if (savedImage) {
+        publicImageUrl = `${req.protocol}://${req.get('host')}/uploads/slips/${savedImage.filename}`;
+        await SlipDispatch.updateOne({ _id: dispatch._id }, { $set: { slipImageUrl: publicImageUrl } });
+      }
+    }
+
+    let messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
+
+नमस्कार *${voterName}* जी,
+आगामी चुनाव हेतु आपकी मतदाता पर्ची का विवरण:
+
+• *पहचान पत्र क्रमांक (EPIC):* ${dbVoter.epic || '—'}
+• *नाम:* ${voterName}
+${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार्ड क्रमांक:* ${ward}
+• *भाग संख्या:* ${part}
+• *मतदाता सूची क्रमांक:* ${serial}
+• *मतदान केंद्र:* ${boothName}
+• *आयु / लिंग:* ${ageGender}`;
+
+    if (publicImageUrl) {
+      messageText += `\n\n🖼️ *डिजिटल पर्ची फोटो देखें व डाउनलोड करें:*\n${publicImageUrl}`;
+    }
+
+    messageText += `\n\n🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_\n*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
+
     const waLink = `https://wa.me/${recipientPhone}?text=${encodeURIComponent(messageText)}`;
 
     res.json({
       success: true,
-      message: '1 WhatsApp क्रेडिट काटा गया। WhatsApp चैट खोली जा रही है...',
+      message: '1 WhatsApp क्रेडिट काटा गया।',
       dispatchId: dispatch._id,
       remainingCredits: creditCheck.remainingCredits,
       waLink,
-      messageText
+      messageText,
+      slipImageUrl: publicImageUrl,
+      hasPhoto: Boolean(savedImage)
     });
   } catch (err) {
     console.error('Manual WhatsApp dispatch error:', err.message);
@@ -768,16 +960,17 @@ router.post('/templates/test-send', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'कृपया 10 अंकों का वैध मोबाइल नंबर दर्ज करें।' });
     }
 
-    const token = process.env.META_WHATSAPP_TOKEN?.trim();
-    const phoneNumberId = process.env.META_PHONE_ID?.trim();
-    const graphApiVersion = process.env.META_GRAPH_API_VERSION?.trim() || 'v20.0';
+    const metaConfig = await getEffectiveMetaConfig(req.body.organizationId || req.user.organizationId || 'org_default');
+    const token = metaConfig.token;
+    const phoneNumberId = metaConfig.phoneNumberId;
+    const graphApiVersion = metaConfig.graphApiVersion || 'v20.0';
 
     if (!token || !phoneNumberId) {
       return res.status(400).json({ message: 'Meta WhatsApp Token या Phone ID कॉन्फ़िगर नहीं है।' });
     }
 
-    const tmplName = templateName || 'voter_slip_dispatch';
-    const lang = templateLanguage || 'hi';
+    const tmplName = templateName || metaConfig.templateName || 'voter_slip_dispatch';
+    const lang = templateLanguage || metaConfig.templateLanguage || 'hi';
 
     const testPayload = {
       messaging_product: 'whatsapp',
@@ -824,6 +1017,88 @@ router.post('/templates/test-send', verifyToken, async (req, res) => {
     const errorMsg = err.response?.data?.error?.message || err.message;
     console.error('Test Send Error:', errorMsg);
     res.status(400).json({ message: `परीक्षण विफल: ${errorMsg}` });
+  }
+});
+
+/**
+ * GET /api/whatsapp/config - Super admin read Meta credentials
+ */
+router.get('/config', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const orgId = req.query.organizationId || 'org_default';
+    const config = await getEffectiveMetaConfig(orgId);
+    res.json({
+      phoneNumberId: config.phoneNumberId || '',
+      wabaId: config.wabaId || '',
+      hasToken: Boolean(config.token),
+      tokenMasked: config.token ? `${config.token.substring(0, 15)}...${config.token.substring(config.token.length - 8)}` : '',
+      graphApiVersion: config.graphApiVersion,
+      templateName: config.templateName,
+      templateLanguage: config.templateLanguage
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'क्रेडेंशियल्स लोड नहीं हो पाए।' });
+  }
+});
+
+/**
+ * POST /api/whatsapp/config - Super admin update Meta credentials
+ */
+router.post('/config', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { token, phoneNumberId, wabaId, organizationId } = req.body;
+    const targetOrgId = organizationId || 'org_default';
+
+    let verifyStatus = 'unverified';
+    let verifyError = null;
+
+    const testToken = (token || process.env.META_WHATSAPP_TOKEN || '').trim();
+    const testPhoneId = (phoneNumberId || process.env.META_PHONE_ID || '').trim();
+
+    if (testToken && testPhoneId) {
+      try {
+        await axios.get(`https://graph.facebook.com/v20.0/${testPhoneId}`, {
+          headers: { Authorization: `Bearer ${testToken}` },
+          params: { fields: 'verified_name,display_phone_number,quality_rating' },
+          timeout: 8000
+        });
+        verifyStatus = 'verified';
+      } catch (testErr) {
+        verifyStatus = 'failed';
+        verifyError = testErr.response?.data?.error?.message || testErr.message;
+      }
+    }
+
+    const updateFields = {};
+    if (typeof token === 'string' && token.trim()) {
+      updateFields['whatsappConfig.token'] = token.trim();
+      process.env.META_WHATSAPP_TOKEN = token.trim();
+    }
+    if (typeof phoneNumberId === 'string' && phoneNumberId.trim()) {
+      updateFields['whatsappConfig.phoneNumberId'] = phoneNumberId.trim();
+      process.env.META_PHONE_ID = phoneNumberId.trim();
+    }
+    if (typeof wabaId === 'string' && wabaId.trim()) {
+      updateFields['whatsappConfig.wabaId'] = wabaId.trim();
+      process.env.META_WABA_ID = wabaId.trim();
+    }
+
+    if (Object.keys(updateFields).length > 0) {
+      await Organization.updateOne({ _id: targetOrgId }, { $set: updateFields }, { upsert: true });
+    }
+
+    res.json({
+      success: verifyStatus !== 'failed',
+      verifyStatus,
+      verifyError,
+      message: verifyStatus === 'verified'
+        ? 'Meta API क्रेडेंशियल्स सफलतापूर्वक सत्यापित और सुरक्षित कर दिए गए हैं!'
+        : verifyStatus === 'failed'
+        ? `क्रेडेंशियल्स सुरक्षित हुए, पर Meta सत्यापन विफल: ${verifyError}`
+        : 'क्रेडेंशियल्स सुरक्षित कर दिए गए हैं।'
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message || 'क्रेडेंशियल्स सुरक्षित नहीं हो पाए।' });
   }
 });
 

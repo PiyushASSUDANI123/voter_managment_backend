@@ -28,11 +28,16 @@ const apiLimiter = rateLimit({
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
 });
 
+const path = require('path');
+
 // Middleware
-app.use(helmet()); // Secure HTTP headers
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+})); // Secure HTTP headers with cross-origin resource access for slips
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api', apiLimiter); // Apply rate limiter to all API routes
 
 // Request Logging Middleware
