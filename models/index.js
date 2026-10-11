@@ -25,6 +25,7 @@ const organizationSchema = new mongoose.Schema({
 const userSchema = new mongoose.Schema({
   _id: { type: String, required: true },
   email: { type: String, required: true, unique: true },
+  username: { type: String, default: null },
   passwordHash: { type: String, required: true },
   fullName: { type: String, required: true },
   phone: { type: String, required: true },
@@ -75,15 +76,25 @@ const voterSchema = new mongoose.Schema({
 });
 
 // 🚀 Performance Optimization: Compound Indexes
-// Helps in filtering voters by organization and part/ward quickly
+// Enables ultra-fast querying by organization and key filters
 voterSchema.index({ organizationId: 1, partNo: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, wardNo: 1 });
+voterSchema.index({ organizationId: 1, wardNo: 1, partNo: 1 });
 voterSchema.index({ organizationId: 1, houseNo: 1 });
+voterSchema.index({ organizationId: 1, partNo: 1, houseNo: 1 });
 voterSchema.index({ organizationId: 1, familyId: 1 });
 voterSchema.index({ organizationId: 1, epic: 1 });
+voterSchema.index({ organizationId: 1, mobileNo: 1 });
+voterSchema.index({ organizationId: 1, caste: 1 });
+voterSchema.index({ organizationId: 1, voted: 1 });
+voterSchema.index({ organizationId: 1, surety: 1 });
 voterSchema.index({ organizationId: 1, assignedWorker: 1 });
 voterSchema.index({ organizationId: 1, supportStatus: 1 });
 voterSchema.index({ organizationId: 1, isMigrant: 1 });
+
+// User Model Indexes
+userSchema.index({ organizationId: 1, role: 1 });
+userSchema.index({ organizationId: 1, isActive: 1 });
 
 // 🚀 Performance Optimization: Text Search Index
 // Enables fast text searching across multiple name fields (English & Hindi)
@@ -109,17 +120,20 @@ const slipDispatchSchema = new mongoose.Schema({
 });
 
 slipDispatchSchema.index({ organizationId: 1, createdAt: -1 });
+slipDispatchSchema.index({ organizationId: 1, status: 1 });
 
 const leadSchema = new mongoose.Schema({
   _id: { type: String, required: true },
   name: { type: String, required: true },
-  phone: { type: String, required: true },
+  phone: { type: String, required: true, index: true },
   constituency: { type: String, default: '' },
   electionType: { type: String, default: 'विधानसभा (Assembly)' },
-  status: { type: String, enum: ['new', 'contacted', 'converted', 'closed'], default: 'new' },
+  status: { type: String, enum: ['new', 'contacted', 'converted', 'closed'], default: 'new', index: true },
   notes: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now, index: true }
 });
+
+leadSchema.index({ status: 1, createdAt: -1 });
 
 const Organization = mongoose.model('Organization', organizationSchema);
 const User = mongoose.model('User', userSchema);

@@ -37,14 +37,26 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
-    if (typeof email !== 'string' || typeof password !== 'string') {
-      return res.status(400).json({ message: 'Email and password are required.' });
+    const { email, password, username } = req.body;
+    const loginIdentifier = (email || username || '').trim();
+    if (!loginIdentifier || typeof password !== 'string') {
+      return res.status(400).json({ message: 'Email/Username and password are required.' });
     }
 
-    // Check user and organization
-    const user = await User.findOne({ email: email.trim() });
-    if (!user) return res.status(400).json({ message: 'Invalid Credentials' });
+    const safeRegex = loginIdentifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const exactRegex = new RegExp(`^${safeRegex}$`, 'i');
+    const prefixRegex = new RegExp(`^${safeRegex}@`, 'i');
+
+    // Check user by email, username, prefix or fullName
+    const user = await User.findOne({
+      $or: [
+        { email: exactRegex },
+        { username: exactRegex },
+        { email: prefixRegex },
+        { fullName: exactRegex }
+      ]
+    });
+    if (!user) return res.status(400).json({ message: 'गलत ईमेल/यूज़रनेम या पासवर्ड (Invalid Credentials)' });
     
     const org = await Organization.findById(user.organizationId);
     if (!org) return res.status(403).json({ message: 'Organization not found.' });

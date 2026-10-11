@@ -1,10 +1,19 @@
 const crypto = require('node:crypto');
 const mongoose = require('mongoose');
-const { Organization, User } = require('./models/index');
+const { Organization, User, Voter, SlipDispatch, Lead } = require('./models/index');
 const bcrypt = require('bcryptjs');
 
 const ensureSchema = async () => {
   try {
+    // Ensure all model indexes are maintained in MongoDB
+    Promise.all([
+      Voter.init(),
+      User.init(),
+      Organization.init(),
+      SlipDispatch.init(),
+      Lead.init(),
+    ]).catch((idxErr) => console.warn('Background index sync notice:', idxErr.message));
+
     const orgCount = await Organization.countDocuments({ isActive: true });
     if (orgCount === 0) {
       await Organization.create({

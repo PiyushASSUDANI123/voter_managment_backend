@@ -41,6 +41,36 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
   }
 });
 
+// Get unique wards list with counts for current organization (Cached 5m)
+router.get('/wards-summary', verifyToken, requireModule('voters', 'community', 'poll-desk'), async (req, res) => {
+  try {
+    const cacheKey = `wards_summary_${req.user.organizationId}_${req.user.id}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const query = addVoterAccess(req);
+    const rawWards = await Voter.aggregate([
+      { $match: query },
+      { $group: { _id: '$wardNo', count: { $sum: 1 } } }
+    ]);
+    const wards = rawWards
+      .filter((w) => w._id !== null && w._id !== undefined && String(w._id).trim() !== '')
+      .sort((a, b) => {
+        const numA = parseInt(a._id, 10);
+        const numB = parseInt(b._id, 10);
+        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+        return String(a._id).localeCompare(String(b._id));
+      });
+    const total = await Voter.countDocuments(query);
+    const result = { wards, total };
+    cache.set(cacheKey, result, 300);
+    res.json(result);
+  } catch (err) {
+    console.error('Wards summary failed:', err.message);
+    res.status(500).json({ message: 'Wards could not be loaded.' });
+  }
+});
+
 // Get all voters (with search & pagination)
 router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'migrants'), async (req, res) => {
   try {
@@ -134,6 +164,7 @@ router.put('/:id', verifyToken, (req, res, next) => {
       assignedWorker: 'assignedWorker',
       supportStatus: 'supportStatus',
       notes: 'notes',
+      familyId: 'familyId',
       migrantLocation: 'migrantLocation',
       nameEn: 'nameEn',
       nameHi: 'nameHi',
@@ -187,6 +218,11 @@ router.put('/:id', verifyToken, (req, res, next) => {
     const voter = await Voter.findOneAndUpdate(query, { $set: updates }, { returnDocument: 'after' }).lean();
     
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
+
+    // Invalidate Cache for this organization
+    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
+    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
+
     res.json(voter);
   } catch (err) {
     console.error('Voter update failed:', err.message);
@@ -216,9 +252,7 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
     
     // Invalidate Cache for this organization
-    const prefix = `voters_all_${req.user.organizationId}_`;
-    const keys = cache.keys();
-    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
     
     res.json({ success: true, message: 'Vote status updated.' });
   } catch (err) {
@@ -249,9 +283,8 @@ router.delete('/:id', verifyToken, async (req, res) => {
     }
 
     // Invalidate Cache for this organization
-    const prefix = `voters_all_${req.user.organizationId}_`;
-    const keys = cache.keys();
-    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
+    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
 
     res.json({ success: true, message: 'मतदाता सफलतापूर्वक डिलीट कर दिया गया।' });
   } catch (err) {
@@ -280,9 +313,8 @@ router.post('/bulk-delete', verifyToken, async (req, res) => {
     const result = await Voter.deleteMany(query);
 
     // Invalidate Cache for this organization
-    const prefix = `voters_all_${req.user.organizationId}_`;
-    const keys = cache.keys();
-    keys.forEach(k => { if (k.startsWith(prefix)) cache.del(k); });
+    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
+    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
 
     res.json({ success: true, message: `${result.deletedCount} मतदाता सफलतापूर्वक डिलीट कर दिए गए।`, deletedCount: result.deletedCount });
   } catch (err) {

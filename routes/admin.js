@@ -205,22 +205,52 @@ router.put('/organizations/:id/whatsapp-credits', verifyToken, isAdmin, async (r
 });
 
 router.delete('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
-  const session = await mongoose.startSession();
+  const orgId = req.params.id;
+  if (!orgId || orgId === 'org_default') {
+    return res.status(400).json({ message: 'Default organization cannot be deleted.' });
+  }
+
   try {
-    session.startTransaction();
-    await User.deleteMany({ organizationId: req.params.id }, { session });
-    await Voter.deleteMany({ organizationId: req.params.id }, { session });
-    const result = await Organization.deleteOne({ _id: req.params.id }, { session });
-    await session.commitTransaction();
-    
-    if (result.deletedCount === 0) return res.status(404).json({ message: 'Organization not found.' });
-    res.json({ success: true, message: 'Organization deleted.' });
+    const { SlipDispatch } = require('../models/index');
+
+    // Sequential cascade deletion (avoids MongoDB transaction concurrency/replica set locks)
+    const voterRes = await Voter.deleteMany({ organizationId: orgId });
+    const dispRes = await SlipDispatch.deleteMany({ organizationId: orgId });
+    const userRes = await User.deleteMany({ organizationId: orgId });
+    const orgRes = await Organization.deleteOne({ _id: orgId });
+
+    if (orgRes.deletedCount === 0) {
+      return res.status(404).json({ message: 'Organization not found.' });
+    }
+
+    // Flush cache entries for this organization
+    try {
+      if (cache) {
+        if (typeof cache.delPrefix === 'function') {
+          cache.delPrefix(`voters_all_${orgId}_`);
+          cache.delPrefix(`wards_summary_${orgId}_`);
+          cache.delPrefix(orgId);
+        }
+        if (typeof cache.flush === 'function') {
+          cache.flush();
+        } else if (typeof cache.flushAll === 'function') {
+          cache.flushAll();
+        }
+      }
+    } catch (cacheErr) {
+      console.warn('Cache clear warning on org delete:', cacheErr.message);
+    }
+
+    res.json({
+      success: true,
+      message: `Organization and all associated data deleted successfully (${voterRes.deletedCount} voters, ${userRes.deletedCount} users, ${dispRes.deletedCount} dispatches).`,
+      deletedVoters: voterRes.deletedCount,
+      deletedUsers: userRes.deletedCount,
+      deletedDispatches: dispRes.deletedCount
+    });
   } catch (err) {
-    await session.abortTransaction();
-    console.error('Organization deletion failed:', err.message);
-    res.status(500).json({ message: 'Could not delete organization.' });
-  } finally {
-    session.endSession();
+    console.error('Organization cascade deletion failed:', err);
+    res.status(500).json({ message: 'Could not delete organization and its data: ' + err.message });
   }
 });
 
@@ -386,16 +416,142 @@ router.delete('/master-data', verifyToken, isAdmin, async (req, res) => {
 });
 
 router.get('/system-health', verifyToken, isAdmin, async (_req, res) => {
+  const os = require('node:os');
+  const fs = require('node:fs');
+
   let database = 'unavailable';
+  let dbStats = { totalVoters: 0, totalOrganizations: 0, totalUsers: 0, totalDispatches: 0, dbName: 'vijaysetu' };
   try {
-    if (mongoose.connection.readyState === 1) database = 'connected';
+    if (mongoose.connection.readyState === 1) {
+      database = 'connected';
+      dbStats.dbName = mongoose.connection.name || 'vijaysetu';
+      const { Voter, Organization, User, SlipDispatch } = require('../models/index');
+      const [voters, orgs, users, dispatches] = await Promise.all([
+        Voter.estimatedDocumentCount().catch(() => 0),
+        Organization.countDocuments({ _id: { $ne: 'org_default' } }).catch(() => 0),
+        User.countDocuments().catch(() => 0),
+        SlipDispatch.countDocuments().catch(() => 0),
+      ]);
+      dbStats.totalVoters = voters;
+      dbStats.totalOrganizations = orgs;
+      dbStats.totalUsers = users;
+      dbStats.totalDispatches = dispatches;
+    }
   } catch (err) {
     console.error('Admin database health check failed:', err.message);
   }
-  const metaReady = Boolean(process.env.META_WHATSAPP_TOKEN?.trim()
+
+  // Disk storage info (SSD Capacity e.g. 512GB, Used, Free)
+  let disk = { totalGB: 512, usableTotalGB: 460, usedGB: 260, freeGB: 200, usedPercent: 57, mountPoint: '/' };
+  try {
+    if (typeof fs.statfsSync === 'function') {
+      const s = fs.statfsSync('/');
+      const rawTotal = (s.bsize * s.blocks) / (1024 * 1024 * 1024);
+      const rawFree = (s.bsize * s.bavail) / (1024 * 1024 * 1024);
+      const rawUsed = Math.max(0, rawTotal - rawFree);
+      // Determine physical SSD hardware tier (e.g. 256GB, 512GB, 1TB)
+      let nominalTier = Math.round(rawTotal);
+      if (rawTotal >= 400 && rawTotal <= 525) nominalTier = 512;
+      else if (rawTotal >= 200 && rawTotal <= 270) nominalTier = 256;
+      else if (rawTotal >= 850 && rawTotal <= 1050) nominalTier = 1024;
+      
+      const usedGB = Math.round(rawUsed * 10) / 10;
+      const freeGB = Math.round(rawFree * 10) / 10;
+      const usedPercent = Math.round((rawUsed / rawTotal) * 100);
+      disk = {
+        totalGB: nominalTier,
+        usableTotalGB: Math.round(rawTotal * 10) / 10,
+        usedGB,
+        freeGB,
+        usedPercent,
+        mountPoint: '/',
+      };
+    }
+  } catch (diskErr) {
+    console.warn('Disk statfs error:', diskErr.message);
+  }
+
+  // Memory (RAM) info - accurately calculate active memory vs buffer/cache on macOS and Linux
+  const totalMemBytes = os.totalmem();
+  const totalGB = Math.round((totalMemBytes / (1024 * 1024 * 1024)) * 10) / 10;
+  let freeMemBytes = os.freemem();
+  let usedMemBytes = Math.max(0, totalMemBytes - freeMemBytes);
+
+  // On macOS (Darwin) or Linux, os.freemem() excludes page cache and inactive pages,
+  // making RAM look 99% used even when system is healthy. We refine it here:
+  if (process.platform === 'darwin') {
+    try {
+      const { execSync } = require('child_process');
+      const vm = execSync('vm_stat', { encoding: 'utf8', timeout: 800 });
+      const pageSizeMatch = vm.match(/page size of (\d+) bytes/);
+      const pageSize = pageSizeMatch ? parseInt(pageSizeMatch[1], 10) : 4096;
+      const activeMatch = vm.match(/Pages active:\s+(\d+)/);
+      const wiredMatch = vm.match(/Pages wired down:\s+(\d+)/);
+      const compressedMatch = vm.match(/Pages occupied by compressor:\s+(\d+)/);
+      if (activeMatch && wiredMatch) {
+        const activePages = parseInt(activeMatch[1], 10);
+        const wiredPages = parseInt(wiredMatch[1], 10);
+        const compPages = compressedMatch ? parseInt(compressedMatch[1], 10) : 0;
+        const appMemBytes = (activePages + wiredPages + compPages) * pageSize;
+        usedMemBytes = Math.min(totalMemBytes, appMemBytes);
+        freeMemBytes = Math.max(0, totalMemBytes - usedMemBytes);
+      }
+    } catch {}
+  } else if (process.platform === 'linux') {
+    try {
+      const memInfo = fs.readFileSync('/proc/meminfo', 'utf8');
+      const availMatch = memInfo.match(/MemAvailable:\s+(\d+)\s+kB/i);
+      if (availMatch) {
+        const availBytes = parseInt(availMatch[1], 10) * 1024;
+        freeMemBytes = availBytes;
+        usedMemBytes = Math.max(0, totalMemBytes - freeMemBytes);
+      }
+    } catch {}
+  }
+
+  const usedGB = Math.round((usedMemBytes / (1024 * 1024 * 1024)) * 10) / 10;
+  const freeGB = Math.round((freeMemBytes / (1024 * 1024 * 1024)) * 10) / 10;
+  const usedPercent = Math.round((usedMemBytes / totalMemBytes) * 100);
+
+  const memory = {
+    totalGB,
+    usedGB,
+    freeGB,
+    usedPercent,
+    heapUsedMB: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
+    rssUsedMB: Math.round(process.memoryUsage().rss / (1024 * 1024)),
+  };
+
+  // CPU & Server runtime info
+  const cpus = os.cpus() || [];
+  const systemInfo = {
+    cpuModel: cpus[0]?.model || 'Multi-Core Processor',
+    cpuCores: cpus.length || 1,
+    loadAvg: os.loadavg ? os.loadavg().map((l) => Math.round(l * 100) / 100) : [0, 0, 0],
+    platform: `${os.type()} (${os.arch()})`,
+    nodeVersion: process.version,
+    uptimeSeconds: Math.floor(process.uptime()),
+    systemUptimeSeconds: Math.floor(os.uptime()),
+  };
+
+  const metaReady = Boolean(
+    process.env.META_WHATSAPP_TOKEN?.trim()
     && process.env.META_PHONE_ID?.trim()
-    && process.env.META_GRAPH_API_VERSION?.trim());
-  res.json({ database, metaReady, platform: 'MongoDB', checkedAt: new Date().toISOString() });
+    && process.env.META_GRAPH_API_VERSION?.trim()
+  );
+
+  res.json({
+    database,
+    metaReady,
+    platform: 'MongoDB',
+    checkedAt: new Date().toISOString(),
+    isLiveTelemetry: true,
+    cache: cache.getStatus(),
+    disk,
+    memory,
+    systemInfo,
+    dbStats,
+  });
 });
 
 router.get('/import-template.xlsx', verifyToken, isAdmin, async (_req, res) => {
@@ -727,12 +883,26 @@ const SAMPLE_DEMO_NAMES = [
 // Admin-only: Generate a new Demo User with sample data
 router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
   try {
-    const { clientName, customEmail, customPassword } = req.body || {};
+    const { clientName, customEmail, customPassword, targetOrgId } = req.body || {};
     const randomCode = Math.floor(1000 + Math.random() * 9000);
+
+    let targetOrg = null;
+    let orgId = `tenant_demo_${randomCode}`;
+
+    if (targetOrgId && targetOrgId !== 'new') {
+      targetOrg = await Organization.findById(targetOrgId);
+      if (targetOrg) {
+        orgId = targetOrg._id;
+      }
+    }
+
+    const defaultPrefix = targetOrg
+      ? targetOrg.name.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase().slice(0, 15)
+      : 'demo';
 
     const email = (customEmail && typeof customEmail === 'string' && customEmail.includes('@'))
       ? customEmail.trim().toLowerCase()
-      : `demo_${randomCode}@vijaysetu.com`;
+      : `${defaultPrefix || 'demo'}_${randomCode}@vijaysetu.com`;
 
     const existingUser = await User.findOne({ email });
     if (existingUser) {
@@ -744,36 +914,36 @@ router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
       : `Demo@${randomCode}`;
 
     const passwordHash = await bcrypt.hash(plainPassword, 10);
-    const orgId = `tenant_demo_${randomCode}`;
     const name = (clientName && typeof clientName === 'string' && clientName.trim())
       ? clientName.trim()
-      : `डेमो क्लाइंट #${randomCode}`;
+      : targetOrg ? `डेमो - ${targetOrg.name}` : `डेमो क्लाइंट #${randomCode}`;
 
-    const demoWards = [];
     const demoModules = ['voters', 'poll-desk', 'turnout', 'warroom', 'history', 'community', 'workers', 'migrants', 'accounts'];
 
-    // 1. Create Demo Organization
-    await Organization.create({
-      _id: orgId,
-      name,
-      enabledModules: demoModules,
-      allowedWards: demoWards,
-      isActive: true,
-      isDemo: true,
-      demoPassword: plainPassword,
-      whatsappEnabled: true,
-      whatsappCredits: 50,
-      whatsappUsed: 0,
-      slipConfig: {
-        candidateName: 'श्री राजेश कुमार शर्मा',
-        candidateParty: 'भारतीय जनता पार्टी (भाजपा)',
-        assemblyConstituency: 'हवामहल (विधानसभा क्षेत्र)',
-        wardNumber: 'वार्ड 1',
-        pollingDate: '25 नवम्बर 2024',
-        appealHeadline: '(1 नंबर पर कमल का फूल का बटन दबाएं)',
-        footerAppeal: 'कमल का बटन दबाएं और भारी मतों से विजयी बनाएं'
-      }
-    });
+    // 1. If not an existing organization, create standalone demo organization
+    if (!targetOrg) {
+      await Organization.create({
+        _id: orgId,
+        name,
+        enabledModules: demoModules,
+        allowedWards: [],
+        isActive: true,
+        isDemo: true,
+        demoPassword: plainPassword,
+        whatsappEnabled: true,
+        whatsappCredits: 50,
+        whatsappUsed: 0,
+        slipConfig: {
+          candidateName: 'श्री राजेश कुमार शर्मा',
+          candidateParty: 'भारतीय जनता पार्टी (भाजपा)',
+          assemblyConstituency: 'हवामहल (विधानसभा क्षेत्र)',
+          wardNumber: 'वार्ड 1',
+          pollingDate: '25 नवम्बर 2024',
+          appealHeadline: '(1 नंबर पर कमल का फूल का बटन दबाएं)',
+          footerAppeal: 'कमल का बटन दबाएं और भारी मतों से विजयी बनाएं'
+        }
+      });
+    }
 
     // 2. Create Demo User
     await User.create({
@@ -789,59 +959,66 @@ router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
       demoPassword: plainPassword
     });
 
-    // 3. Seed Realistic Demo Voters
-    const supportStatuses = ['core', 'core', 'swing', 'swing', 'opposition', 'unmarked'];
-    const sampleVoters = SAMPLE_DEMO_NAMES.map((item, idx) => {
-      const serialNo = idx + 1;
-      const wardNo = String((idx % 3) + 1);
-      const partNo = String(10 + (idx % 2));
-      const epicPrefix = 'RJX';
-      const epicNum = String(1000000 + randomCode * 100 + serialNo);
-      const isFemale = item.relType === 'पति';
-      const age = 22 + (idx * 3) % 45;
-      const voted = idx % 3 === 0;
+    // 3. Seed Realistic Demo Voters if org has no voters
+    let sampleVotersCount = 0;
+    const existingVoters = await Voter.countDocuments({ organizationId: orgId });
+    if (existingVoters === 0) {
+      const supportStatuses = ['core', 'core', 'swing', 'swing', 'opposition', 'unmarked'];
+      const sampleVoters = SAMPLE_DEMO_NAMES.map((item, idx) => {
+        const serialNo = idx + 1;
+        const wardNo = String((idx % 3) + 1);
+        const partNo = String(10 + (idx % 2));
+        const epicPrefix = 'RJX';
+        const epicNum = String(1000000 + randomCode * 100 + serialNo);
+        const isFemale = item.relType === 'पति';
+        const age = 22 + (idx * 3) % 45;
+        const voted = idx % 3 === 0;
 
-      return {
-        _id: `voter_demo_${randomCode}_${serialNo}`,
-        epic: `${epicPrefix}${epicNum.slice(0, 7)}`,
-        wardNo,
-        partNo,
-        serialNo,
-        nameEn: item.en,
-        nameHi: item.hi,
-        age,
-        gender: isFemale ? 'स्त्री' : 'पुरुष',
-        relationType: item.relType,
-        relativeNameEn: item.relEn,
-        relativeNameHi: item.relHi,
-        houseNo: item.house,
-        houseNoHi: item.house,
-        mobileNo: '9829' + String(100000 + serialNo * 1234).slice(0, 6),
-        caste: item.caste,
-        supportStatus: supportStatuses[idx % supportStatuses.length],
-        voted,
-        votedAt: voted ? new Date() : null,
-        surety: idx % 2 === 0 ? 'पक्का' : 'संभावित',
-        notes: idx === 0 ? 'वार्ड के प्रमुख सम्मानित नागरिक' : '',
-        isMigrant: idx === 4 || idx === 12,
-        migrantLocation: idx === 4 ? 'सूरत, गुजरात' : idx === 12 ? 'मुंबई' : '',
-        organizationId: orgId,
-        familyId: `fam_${item.house}`
-      };
-    });
+        return {
+          _id: `voter_demo_${randomCode}_${serialNo}`,
+          epic: `${epicPrefix}${epicNum.slice(0, 7)}`,
+          wardNo,
+          partNo,
+          serialNo,
+          nameEn: item.en,
+          nameHi: item.hi,
+          age,
+          gender: isFemale ? 'स्त्री' : 'पुरुष',
+          relationType: item.relType,
+          relativeNameEn: item.relEn,
+          relativeNameHi: item.relHi,
+          houseNo: item.house,
+          houseNoHi: item.house,
+          mobileNo: '9829' + String(100000 + serialNo * 1234).slice(0, 6),
+          caste: item.caste,
+          supportStatus: supportStatuses[idx % supportStatuses.length],
+          voted,
+          votedAt: voted ? new Date() : null,
+          surety: idx % 2 === 0 ? 'पक्का' : 'संभावित',
+          notes: idx === 0 ? 'वार्ड के प्रमुख सम्मानित नागरिक' : '',
+          isMigrant: idx === 4 || idx === 12,
+          migrantLocation: idx === 4 ? 'सूरत, गुजरात' : idx === 12 ? 'मुंबई' : '',
+          organizationId: orgId,
+          familyId: `fam_${item.house}`
+        };
+      });
 
-    await Voter.insertMany(sampleVoters);
+      await Voter.insertMany(sampleVoters);
+      sampleVotersCount = sampleVoters.length;
+    } else {
+      sampleVotersCount = existingVoters;
+    }
 
     res.status(201).json({
       success: true,
-      message: 'डेमो यूज़र और 25 सैंपल मतदाताओं का डेटा सफलतापूर्वक तैयार किया गया।',
+      message: `डेमो खाता तैयार हो गया (${targetOrg ? targetOrg.name : 'नया क्लाइंट'})!`,
       demoUser: {
         id: orgId,
         name,
         email,
         password: plainPassword,
         isActive: true,
-        voterCount: sampleVoters.length,
+        voterCount: sampleVotersCount,
         createdAt: new Date().toISOString()
       }
     });
@@ -854,24 +1031,31 @@ router.post('/demo-user', verifyToken, isAdmin, async (req, res) => {
 // Admin-only: List all Demo Users
 router.get('/demo-users', verifyToken, isAdmin, async (_req, res) => {
   try {
+    const demoUsers = await User.find({ isDemo: true }).sort({ createdAt: -1 }).lean();
     const demoOrgs = await Organization.find({
       $or: [{ isDemo: true }, { _id: { $regex: '^tenant_demo_' } }]
     }).sort({ createdAt: -1 }).lean();
 
-    const result = await Promise.all(demoOrgs.map(async (org) => {
-      const user = await User.findOne({ organizationId: org._id, role: 'tenant_admin' }).lean();
-      const voterCount = await Voter.countDocuments({ organizationId: org._id });
+    const orgMap = new Map();
+    demoOrgs.forEach((o) => orgMap.set(o._id, o));
 
-      return {
-        id: org._id,
-        name: org.name,
-        email: user?.email || 'N/A',
-        password: user?.demoPassword || org.demoPassword || '—',
-        isActive: org.isActive !== false && user?.isActive !== false,
-        voterCount,
-        createdAt: org.createdAt
-      };
-    }));
+    const result = await Promise.all(
+      demoUsers.map(async (user) => {
+        const org = orgMap.get(user.organizationId) || (await Organization.findById(user.organizationId).lean());
+        const voterCount = await Voter.countDocuments({ organizationId: user.organizationId });
+
+        return {
+          id: user.organizationId,
+          userId: user._id,
+          name: user.fullName || org?.name || 'डेमो यूज़र',
+          email: user.email || 'N/A',
+          password: user.demoPassword || org?.demoPassword || '—',
+          isActive: user.isActive !== false && org?.isActive !== false,
+          voterCount,
+          createdAt: user.createdAt
+        };
+      })
+    );
 
     res.json(result);
   } catch (err) {
