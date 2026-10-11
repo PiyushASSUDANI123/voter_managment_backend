@@ -70,26 +70,34 @@ const ExcelJS = require('exceljs');
             if (rowNumber === 1) return; // header
             const values = row.values;
             const epic = String(values[2] || '').trim();
-            const nameHi = String(values[3] || '').trim();
-            if (epic || nameHi) {
-              const cleanName = cleanHindiText(nameHi) || "मतदाता";
+            const rawName = String(values[3] || '').trim();
+            const cleanName = cleanHindiText(rawName);
+
+            // STRICT VALIDATION: Require authentic voter name
+            if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
               const cleanRel = cleanHindiText(String(values[4] || ''));
-              const cleanH = cleanHouseNo(String(values[6] || '')) || '1';
+              const cleanH = cleanHouseNo(String(values[6] || ''));
               let ageVal = values[7] ? parseInt(values[7], 10) : null;
               if (!ageVal || ageVal < 18 || ageVal > 125) ageVal = null;
+              
               let relType = String(values[5] || '').trim();
               if (!['पिता', 'पति', 'माता', 'अन्य'].includes(relType)) {
                 relType = 'पिता';
               }
+              
               let genderVal = String(values[8] || '').trim();
-              if (!['पुरुष', 'स्त्री'].includes(genderVal)) {
+              if (relType === 'पति') {
+                genderVal = 'स्त्री';
+              } else if (['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती'].some(fem => cleanName.includes(fem))) {
+                genderVal = 'स्त्री';
+              } else if (!['पुरुष', 'स्त्री'].includes(genderVal)) {
                 genderVal = 'पुरुष';
               }
 
               finalVoterList.push({
-                epic: epic || `VOTER_${rowNumber - 1}`,
+                epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
                 nameHi: cleanName,
-                relativeNameHi: cleanRel,
+                relativeNameHi: cleanRel.length >= 2 ? cleanRel : '',
                 relationType: relType,
                 houseNo: cleanH,
                 age: ageVal,
@@ -98,7 +106,7 @@ const ExcelJS = require('exceljs');
               });
             }
           });
-          console.log(`Python engine extracted ${finalVoterList.length} voters with high precision.`);
+          console.log(`Python engine extracted ${finalVoterList.length} authentic voters with high precision.`);
         } catch (pyErr) {
           console.warn("Python extraction failed, falling back to local JS OCR:", pyErr.message);
           finalVoterList = [];
@@ -112,38 +120,25 @@ const ExcelJS = require('exceljs');
         
         console.log(`OCR returned ${extractedVoters.length} parsed cards. Vector EPICs count: ${vectorEpics.length}`);
 
-        finalVoterList = extractedVoters.map((card, idx) => {
-          let matchedEpic = card.epic;
-          if ((!matchedEpic || matchedEpic.length < 5) && vectorEpics[idx]) {
-            matchedEpic = vectorEpics[idx];
-          } else if (matchedEpic && !vectorEpics.includes(matchedEpic)) {
-            const closeVector = vectorEpics.find(ve => 
-              ve.slice(-6) === matchedEpic.slice(-6) ||
-              ve.replace(/[^0-9]/g, '') === matchedEpic.replace(/[^0-9]/g, '')
-            );
-            if (closeVector) matchedEpic = closeVector;
-          }
+        finalVoterList = extractedVoters
+          .filter(card => card.nameHi && card.nameHi !== 'मतदाता' && card.nameHi.length >= 2)
+          .map((card, idx) => {
+            let matchedEpic = card.epic;
+            if ((!matchedEpic || matchedEpic.length < 5) && vectorEpics[idx]) {
+              matchedEpic = vectorEpics[idx];
+            } else if (matchedEpic && !vectorEpics.includes(matchedEpic)) {
+              const closeVector = vectorEpics.find(ve => 
+                ve.slice(-6) === matchedEpic.slice(-6) ||
+                ve.replace(/[^0-9]/g, '') === matchedEpic.replace(/[^0-9]/g, '')
+              );
+              if (closeVector) matchedEpic = closeVector;
+            }
 
-          return {
-            ...card,
-            epic: matchedEpic || (vectorEpics[idx] || `VOTER_${idx + 1}`)
-          };
-        });
-
-        if (finalVoterList.length < vectorEpics.length) {
-          for (let i = finalVoterList.length; i < vectorEpics.length; i++) {
-            finalVoterList.push({
-              epic: vectorEpics[i],
-              nameHi: "मतदाता",
-              relativeNameHi: "",
-              relationType: "पिता",
-              houseNo: "",
-              age: null,
-              gender: "अन्य",
-              status: "Active"
-            });
-          }
-        }
+            return {
+              ...card,
+              epic: matchedEpic || (vectorEpics[idx] || `VOTER_${idx + 1}`)
+            };
+          });
       }
 
     } else {
@@ -212,11 +207,16 @@ const ExcelJS = require('exceljs');
         const epicM = fullBlock.match(/([A-Z]{3}[0-9]{7}|[A-Z]{2,3}[\/\-]\d{2}[\/\-]\d{2,3}[\/\-]\d{4,6}|[A-Z0-9]{10})/i);
         const cardEpic = epicM ? epicM[1].replace(/\s+/g, '').toUpperCase() : (vectorEpics[finalVoterList.length] || "");
 
-        if (cardEpic || nameHi) {
+        const cleanName = cleanHindiText(nameHi);
+        if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
+          if (relationType === 'पति' || ['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती'].some(fem => cleanName.includes(fem))) {
+            genderVal = 'स्त्री';
+          }
+
           finalVoterList.push({
-            epic: cardEpic,
-            nameHi: nameHi || "मतदाता",
-            relativeNameHi: relativeNameHi,
+            epic: cardEpic || `VOTER_${finalVoterList.length + 1}`,
+            nameHi: cleanName,
+            relativeNameHi: relativeNameHi.length >= 2 ? relativeNameHi : '',
             relationType,
             houseNo,
             age,
@@ -229,9 +229,18 @@ const ExcelJS = require('exceljs');
 
     updateProgress(55);
 
-    // Build MongoDB bulkWrite operations
+    // Build MongoDB bulkWrite operations with strict quality filters
     const operations = finalVoterList
-      .filter(v => v.epic && v.epic.length >= 4)
+      .filter(v => {
+        if (!v) return false;
+        const cleanN = (v.nameHi || '').trim();
+        if (!cleanN || cleanN === 'मतदाता' || cleanN.length < 2) return false;
+        if (/^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या)/i.test(cleanN)) return false;
+        const hasEpic = v.epic && v.epic.length >= 5 && !v.epic.startsWith('VOTER_');
+        // If epic is missing or generated, strictly require valid relative name AND authentic age
+        const hasAuthenticDetails = v.relativeNameHi && v.relativeNameHi.length >= 2 && v.age && v.age >= 18 && v.age <= 125;
+        return hasEpic || hasAuthenticDetails;
+      })
       .map((voter, i) => {
         const updateFields = {
           nameHi: voter.nameHi,
@@ -250,7 +259,7 @@ const ExcelJS = require('exceljs');
           _id: `voter_${crypto.randomUUID()}`,
           epic: voter.epic,
           serialNo: i + 1,
-          nameEn: voter.nameHi,
+          nameEn: voter.nameHi.replace(/^(?:ara|ava|sl|no|nam|cr)[:\s\-]+/i, '').trim(),
           organizationId: organizationId,
         };
 

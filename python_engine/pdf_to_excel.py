@@ -59,9 +59,10 @@ def clean_hindi_name(raw: str) -> str:
         return ""
     n = raw.strip()
     
-    # Remove leading OCR noise or label prefixes (e.g. 'ava:', 'ara:', 'नाम:', 'मतदाता का नाम:')
-    n = re.sub(r'^(?:ava|ara|name|no|sl|s)?[:\-]?\s*', '', n, flags=re.IGNORECASE)
-    n = re.sub(r'^(?:[\|\[\(\\\/]*\s*(?:मतदाता\s*का\s*)?(?:नाम|नाम्|नाभ))\s*[:ः\-\. ]\s*', '', n, flags=re.IGNORECASE)
+    # Remove leading OCR noise or label prefixes (e.g. 'ava:', 'ara:', 'नाम:', 'पिता:', 'पति:', 'मतदाता का नाम:')
+    n = re.sub(r'^(?:ava|ara|name|no|sl|s|voter|nam|na|sn|cr)?[:\-\.\s]+', '', n, flags=re.IGNORECASE)
+    n = re.sub(r'^(?:[\|\[\(\\\/]*\s*(?:(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नाम्|नाभ)|(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*(?:नाम|नाम्|नाभ)?))\s*[:ः\-\.\s]+', '', n, flags=re.IGNORECASE)
+    n = re.sub(r'^(?:मकान|गृह)\s*(?:संख्या)?\s*[:ः\-\.\s]+', '', n, flags=re.IGNORECASE)
     
     # Strictly remove English / Latin characters (English not permitted in Hindi name)
     n = re.sub(r'[a-zA-Z]+', ' ', n)
@@ -69,13 +70,16 @@ def clean_hindi_name(raw: str) -> str:
     # Strictly remove digits (numbers not permitted in name)
     n = re.sub(r'[\d\u0966-\u096F]+', ' ', n)
     
-    # Strip non-Devanagari symbols and punctuation
+    # Strip non-Devanagari symbols, brackets, and punctuation (e.g. '[नाम', ']')
     n = re.sub(r'[\|\[\]\(\)\{\}«»®©\'\"\‘\’\`\.\,\^°+।॥~!\?=\+\*&%\$#@;:\/\\_\-¢¥<>]+', ' ', n)
     
+    # Truncate if subsequent field label leaked into name (requires preceding whitespace or explicit colon)
+    n = re.split(r'\s+(?:(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|(?:मकान|गृह)\s*(?:संख्या)?|(?:आयु|उम्र)\s*[:ः\-]?\s*\d+|(?:लिंग|Sex)\s*[:ः\-]?\s*(?:पुरुष|स्त्री|महिला|male|female))\b', n, flags=re.IGNORECASE)[0]
+
     # Iteratively remove field labels or bleed suffixes
     label_bleed = [
-        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|पित|मका|मकान|गृह|आयु|उम्र|लिंग|है|हे|कै|ब्|र्|म्|न्|न|प|व|क|गम|हक)$',
-        r'^(?:श्री|श्रीमती|सुश्री)\s+'
+        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|नातेदार|संबंधी|पित|मका|मकान|गृह|है|हे|कै|ब्|र्|म्|न्|न|प|व|क|गम|हक|रत|हि|क्|ख|लक|खख|पु)$',
+        r'^(?:श्री|श्रीमती|सुश्री|डा|डॉ)\s+'
     ]
     
     changed = True
@@ -92,42 +96,60 @@ def clean_hindi_name(raw: str) -> str:
     # Strip single trailing fragment when attached to common suffixes
     tokens = n.split()
     if len(tokens) >= 3 and len(tokens[-1]) <= 2:
-        if tokens[-2] in ['कुमार', 'देवी', 'सिंह', 'लाल', 'राम', 'चंद', 'मल', 'बाई', 'कंवर', 'प्रसाद']:
+        if tokens[-2] in ['कुमार', 'देवी', 'सिंह', 'लाल', 'राम', 'चंद', 'मल', 'बाई', 'कंवर', 'प्रसाद', 'शर्मा', 'वर्मा', 'जैन', 'गुप्ता']:
             tokens.pop()
             n = ' '.join(tokens)
+    elif len(tokens) >= 2 and len(tokens[-1]) == 1 and tokens[-1] in ['क', 'ख', 'ग', 'घ', 'त', 'र', 'स', 'ह', 'ल', 'म', 'न', 'प', 'व', 'य']:
+        tokens.pop()
+        n = ' '.join(tokens)
 
     # Normalize common OCR typos in Devanagari
     n = re.sub(r'लालन$', 'लाल', n)
     
     # Strictly allow ONLY Devanagari characters and single spaces
     n = re.sub(r'[^\u0900-\u097F\s]', '', n)
-    return re.sub(r'\s+', ' ', n).strip()
+    cleaned = re.sub(r'\s+', ' ', n).strip()
+
+    # Reject administrative keywords, labels, or particles accidentally parsed as names
+    banned = {'मतदाता', 'कलेण्डर', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'अनुभाग', 'प्रारूप', 'मतदान', 'हस्ताक्षर', 'फोटो', 'उपलब्ध', 'संख्या', 'भाग', 'सूची', 'ग्राम', 'नगर', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पिता', 'पति', 'माता', 'अन्य', 'हु', 'है', 'हे', 'की', 'का', 'के', 'नाम'}
+    if cleaned in banned or len(cleaned) < 2 or (len(cleaned.replace(' ', '')) <= 2 and cleaned in ['हु', 'है', 'हे', 'की', 'का', 'के', 'में', 'से', 'को', 'पर']):
+        return ""
+    if any(bw in cleaned for bw in ['विधानसभा', 'निर्वाचक', 'नामावली', 'कलेण्डर', 'प्रारूप', 'मतदान केंद्र', 'हस्ताक्षर', 'अनुभाग विवरण', 'मतदाताओं']):
+        return ""
+    return cleaned
 
 
 def clean_house_no(raw: str) -> str:
     if not raw:
         return ""
     cleaned = normalize_numerals(raw.strip())
+    if any(w in cleaned.lower() for w in ['लागू नहीं', 'उपलब्ध नहीं', 'शून्य', 'nil', 'na', 'none']):
+        return "-"
     # Strip any text labels or word bleed (no textual noise allowed in house fields)
     cleaned = re.sub(r'(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY)+', '', cleaned, flags=re.IGNORECASE)
     # Strip unwanted symbols
     cleaned = re.sub(r'[%*~_!?:;\'"‘’।॥«»°+={}\[\]()|<>^$&#@,¥]+', '', cleaned).strip()
     
-    # Isolate number + optional hindi/latin subpart (e.g. 27, 27क, 498A, 12/3)
+    # Isolate number + optional subpart (e.g. 27, 27क, 498A, 12/3)
     m = re.search(r'(\d+[\/\-]?\d*\s*[क-हA-Za-z]?)', cleaned)
     if m:
         return m.group(1).replace(' ', '')
-    return re.sub(r'[^\w\d\/\-]', '', cleaned).strip()
+    return '-' if cleaned == '-' else ''
 
 
 def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[str, Any]:
     """
     Run isolated OCR on a clean voter card crop (with photo area excluded).
     """
-    try:
-        ocr_txt = pytesseract.image_to_string(img, lang='hin', config='--psm 6')
-    except Exception:
-        ocr_txt = ""
+    ocr_txt = ""
+    if pytesseract:
+        try:
+            ocr_txt = pytesseract.image_to_string(img, lang='hin+eng', config='--psm 6')
+        except Exception:
+            try:
+                ocr_txt = pytesseract.image_to_string(img, lang='hin', config='--psm 6')
+            except Exception:
+                ocr_txt = ""
 
     lines = [l.strip() for l in ocr_txt.splitlines() if l.strip()]
 
@@ -136,27 +158,38 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
     relation_type = "पिता"
     house_no = ""
     age = None
-    gender = "पुरुष"
+    gender = ""
+    extracted_epic = ""
+
+    # Check for EPIC inside card text if visible
+    epic_m = EPIC_PATTERN.search(ocr_txt)
+    if epic_m:
+        extracted_epic = epic_m.group(0).replace(' ', '').upper()
 
     for line in lines:
-        if any(w in line for w in ['क्षेत्र की संख्या', 'विधानसभा', 'निर्वाचक नामावली', 'कलेण्डर', 'वार्ड संख्या', 'भाग संख्या', 'मतदान केंद्र']):
+        if any(w in line for w in ['क्षेत्र की संख्या', 'विधानसभा', 'निर्वाचक नामावली', 'कलेण्डर', 'वार्ड संख्या', 'भाग संख्या', 'मतदान केंद्र', 'अनुभाग']):
             continue
 
-        # 1. Match Relative Name & Relation Type first
-        m_rel = re.search(r'(?:(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
+        # 1. Match Relative Name & Relation Type
+        m_rel = re.search(r'(?:(पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
         if m_rel and not relative_name:
-            relation_type = m_rel.group(1)
-            rel_candidate = clean_hindi_name(m_rel.group(2))
+            relation_type = "अन्य" if m_rel.group(1) == "नातेदार" else m_rel.group(1)
+            raw_rel = m_rel.group(2)
+            # Truncate before subsequent labels
+            raw_rel = re.split(r'\s*(?:मकान|गृह|आयु|उम्र|लिंग|Sex)\b', raw_rel, flags=re.IGNORECASE)[0]
+            rel_candidate = clean_hindi_name(raw_rel)
             if rel_candidate and len(rel_candidate) >= 2 and rel_candidate not in ['है', 'हे', 'की', 'का', 'के']:
                 relative_name = rel_candidate
             continue
 
-        # 2. Match Voter Name (unanchored, avoid lines belonging to other fields)
-        if not re.search(r'(?:(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम|मकान\s*संख्या|गृह\s*संख्या|आयु\s*[:ः\-]?\s*\d+|लिंग\s*[:ः\-])', line):
+        # 2. Match Voter Name
+        if not re.search(r'(?:(पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|मकान\s*संख्या|गृह\s*संख्या|आयु\s*[:ः\-]?\s*\d+|लिंग\s*[:ः\-])', line):
             m_name = re.search(r'(?:[\|\[\(\\\/]*\s*(?:मतदाता\s*का\s*)?(?:नाम|नाम्|नाभ))\s*[:ः\-\. ]\s*([^\n\r]+)', line, re.IGNORECASE)
             if m_name and not name:
                 cand = m_name.group(1)
-                if not any(w in cand for w in ['क्षेत्र', 'संख्या', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'पिता', 'पति', 'माता']):
+                # Truncate before subsequent labels
+                cand = re.split(r'\s*(?:(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|मकान|गृह|आयु|उम्र|लिंग|Sex)\b', cand, flags=re.IGNORECASE)[0]
+                if not any(w in cand for w in ['क्षेत्र', 'संख्या', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड']):
                     name_candidate = clean_hindi_name(cand)
                     if name_candidate and len(name_candidate) >= 2 and name_candidate not in ['है', 'हे', 'की', 'का']:
                         name = name_candidate
@@ -164,12 +197,13 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
         # 3. Match House No
         m_h = re.search(r'(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
         if m_h and not house_no:
-            h_candidate = clean_house_no(m_h.group(1))
+            raw_h = re.split(r'\s*(?:आयु|उम्र|लिंग|Sex)\b', m_h.group(1), flags=re.IGNORECASE)[0]
+            h_candidate = clean_house_no(raw_h)
             if h_candidate:
                 house_no = h_candidate
 
         # 4. Match Age
-        m_a = re.search(r'(?:आयु|आयू|आय|उम्र|age)\s*[:ः\-]?\s*(\d+)', line, re.IGNORECASE)
+        m_a = re.search(r'(?:आयु|आयू|आय|उम्र|age|वर्ष)\s*[:ः\-]?\s*(\d{1,3})', line, re.IGNORECASE)
         if m_a and age is None:
             try:
                 a_val = int(m_a.group(1))
@@ -179,18 +213,18 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
                 pass
 
         # 5. Match Gender
-        m_g = re.search(r'(?:लिंग|Sex)\s*[:ः\-]?\s*([^\s\n\r]+)', line, re.IGNORECASE)
-        if m_g:
+        m_g = re.search(r'(?:लिंग|Sex|gender)\s*[:ः\-]?\s*([^\s\n\r]+)', line, re.IGNORECASE)
+        if m_g and not gender:
             g = m_g.group(1).lower()
-            if any(x in g for x in ['पुरूष', 'पुरुष', 'पु', 'male', 'man']):
+            if any(x in g for x in ['पुरूष', 'पुरुष', 'पु', 'male', 'man', 'परुष']):
                 gender = "पुरुष"
-            elif any(x in g for x in ['स्त्री', 'महिला', 'eft', 'at', 'aft', 'ett', 'eff', 'fem']):
+            elif any(x in g for x in ['स्त्री', 'महिला', 'eft', 'at', 'aft', 'ett', 'eff', 'fem', 'female']):
                 gender = "स्त्री"
 
     # Fallback for name if still empty: pick first valid Devanagari line in crop
     if not name:
         for line in lines:
-            if not any(w in line for w in ['पिता', 'पति', 'माता', 'मकान', 'आयु', 'लिंग', 'क्षेत्र', 'संख्या', 'विधानसभा', 'वार्ड', 'SSB', 'RJ/', 'GKV']):
+            if not any(w in line for w in ['पिता', 'पति', 'माता', 'मकान', 'आयु', 'लिंग', 'क्षेत्र', 'संख्या', 'विधानसभा', 'वार्ड', 'SSB', 'RJ/', 'GKV', 'DELETED', 'विलोपित']):
                 dev_chars = len(re.findall(r'[\u0900-\u097F]', line))
                 if dev_chars >= 3:
                     cand = clean_hindi_name(line)
@@ -198,7 +232,7 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
                         name = cand
                         break
 
-    # Fallbacks from digital text stream when available (recovers watermarked/smudged cards)
+    # Fallbacks from digital text stream when available
     if not house_no and digital_card_text:
         m_h_dig = re.search(r'मकरन\s*सनखजर:?\s*(\d+[कखगघA-Za-z]?)', digital_card_text)
         if m_h_dig:
@@ -214,11 +248,23 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
             except ValueError:
                 pass
 
-    if digital_card_text:
+    if not gender and digital_card_text:
         if 'पचरष' in digital_card_text:
             gender = "पुरुष"
         elif any(w in digital_card_text for w in ['सतरल', 'सल', 'स्त्री', 'महिला']):
             gender = "स्त्री"
+
+    # Intelligent Gender Inference:
+    # 1. If relation is "पति" (husband), voter is female
+    if relation_type == "पति":
+        gender = "स्त्री"
+    # 2. If name indicates female
+    elif name and any(fem in name for fem in ['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती', 'अनीता', 'सुनीता', 'मंजू', 'पूजा']):
+        if not gender or gender == "पुरुष":
+            gender = "स्त्री"
+    # 3. Default to पुरुष only if not already determined
+    if not gender:
+        gender = "पुरुष"
 
     return {
         "nameHi": name,
@@ -227,6 +273,7 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
         "houseNo": house_no,
         "age": age,
         "gender": gender,
+        "epic": extracted_epic
     }
 
 
@@ -238,72 +285,117 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
     page_text = page.get_text()
     page_epics = [m.group(0).replace(' ', '').upper() for m in EPIC_PATTERN.finditer(page_text)]
     
-    # If page has no voter EPICs, it is a cover or summary page
-    if not page_epics:
+    page_width = page.rect.width
+    page_height = page.rect.height
+
+    # Cover pages (first 2 pages) and summary pages have no voter cards
+    if p_idx in (0, 1) and len(page_epics) < 3:
         doc.close()
         return p_idx, [], []
 
-    page_width = page.rect.width
-    page_height = page.rect.height
-    
+    if any(w in page_text for w in ['कलेण्डर', 'अनुभाग विवरण', 'मतदान केंद्र की सूची', 'मतदाताओं की कुल संख्या', 'प्रारूप 20', 'हस्ताक्षर एवं मोहर']) and len(page_epics) < 3:
+        doc.close()
+        return p_idx, [], []
+
     page_cards = []
 
     # =========================================================================
-    # PATH A: ANCHOR-BOX EXTRACTION (High-Precision 1:1 Isolated Card Bounds)
+    # PATH A: ANCHOR-BOX EXTRACTION (High-Precision Column-Bounded Card Bounds)
     # =========================================================================
-    for ep in page_epics:
-        rects = page.search_for(ep)
-        if not rects:
-            continue
-        
-        ep_r = rects[0]
+    if page_epics:
+        for ep in page_epics:
+            rects = page.search_for(ep)
+            if not rects:
+                continue
+            
+            ep_r = rects[0]
 
-        # Calculate bounding box for this single card
-        card_x0 = max(0.0, ep_r.x0 - 43.0)
-        card_y0 = max(0.0, ep_r.y0 - 3.5)
-        card_x1 = min(page_width, card_x0 + 175.0)
-        card_y1 = min(page_height, card_y0 + 73.0)
-        card_rect = fitz.Rect(card_x0, card_y0, card_x1, card_y1)
+            # Determine column boundaries based on horizontal position
+            if ep_r.x0 < page_width * 0.34:
+                col_x0 = max(0.0, page_width * 0.025)
+                col_x1 = page_width * 0.345
+            elif ep_r.x0 < page_width * 0.67:
+                col_x0 = page_width * 0.345
+                col_x1 = page_width * 0.67
+            else:
+                col_x0 = page_width * 0.67
+                col_x1 = min(page_width, page_width * 0.985)
 
-        # Digital text inside this card's box
-        digital_words = page.get_text('words', clip=card_rect)
-        digital_card_text = ' '.join(w[4] for w in digital_words)
+            # Full card vertical bounds
+            card_y0 = max(0.0, ep_r.y0 - 5.0)
+            card_y1 = min(page_height, ep_r.y0 + 74.0)
+            card_rect = fitz.Rect(col_x0, card_y0, col_x1, card_y1)
 
-        # Isolated text area crop (left 75.5% of card, starting at y0 + 16.5 to skip top serial divider)
-        text_rect = fitz.Rect(card_x0 + 1.5, card_y0 + 16.5, card_x0 + 174.0 * 0.755, card_y1 - 2.0)
-        pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=text_rect)
-        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            # Digital text inside this card's box
+            digital_words = page.get_text('words', clip=card_rect)
+            digital_card_text = ' '.join(w[4] for w in digital_words)
 
-        card_data = extract_card_content(img, digital_card_text=digital_card_text)
-        card_data["epic"] = ep
-        card_data["status"] = "Deleted" if re.search(r'DELETED|ELETED|विलोपित', digital_card_text, re.IGNORECASE) else "Active"
-        page_cards.append(card_data)
+            # Isolated text area crop (left 73% of card width, below top serial/EPIC row)
+            # This completely excludes the photo box and neighbouring columns!
+            text_x0 = col_x0 + 2.0
+            text_x1 = col_x0 + (col_x1 - col_x0) * 0.725
+            text_y0 = ep_r.y0 + 13.0
+            text_y1 = card_y1 - 2.0
+            text_rect = fitz.Rect(text_x0, text_y0, text_x1, text_y1)
+
+            pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=text_rect)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+            card_data = extract_card_content(img, digital_card_text=digital_card_text)
+            card_data["epic"] = ep
+            card_data["status"] = "Deleted" if re.search(r'DELETED|ELETED|विलोपित', digital_card_text, re.IGNORECASE) else "Active"
+            
+            # Only keep cards that have a real voter name
+            if card_data.get("nameHi") and card_data["nameHi"] != "मतदाता":
+                page_cards.append(card_data)
 
     # =========================================================================
-    # PATH B: FALLBACK GRID EXTRACTION (If digital search did not find epics)
+    # PATH B: SCANNED PAGE GRID EXTRACTION (If digital search did not find epics)
     # =========================================================================
-    if len(page_cards) < len(page_epics) * 0.5:
+    if len(page_cards) < max(len(page_epics) * 0.5, 1) and p_idx >= 2:
         page_cards = []
         cols = [
-            (int(page_width * 0.05), int(page_width * 0.35)),
-            (int(page_width * 0.35), int(page_width * 0.65)),
-            (int(page_width * 0.65), int(page_width * 0.95))
+            (int(page_width * 0.025), int(page_width * 0.345)),
+            (int(page_width * 0.345), int(page_width * 0.67)),
+            (int(page_width * 0.67), int(page_width * 0.985))
         ]
         
-        # Proportional 9-row grid
-        row_h = page_height * 0.075
-        start_y = page_height * 0.15
+        # 10 rows standard electoral roll grid
+        content_top = page_height * 0.09
+        content_bottom = page_height * 0.94
+        row_h = (content_bottom - content_top) / 10.0
         
-        for r in range(9):
+        for r in range(10):
             for c_idx, (col_x0, col_x1) in enumerate(cols):
-                card_y0 = start_y + (r * row_h)
+                card_y0 = content_top + (r * row_h)
                 card_y1 = card_y0 + row_h
-                text_rect = fitz.Rect(col_x0 + 2, card_y0 + 12, col_x0 + (col_x1 - col_x0) * 0.72, card_y1 - 3)
+                
+                # Card text crop (left 72% of card, below top serial header)
+                text_rect = fitz.Rect(col_x0 + 2.0, card_y0 + 13.0, col_x0 + (col_x1 - col_x0) * 0.725, card_y1 - 2.0)
                 pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=text_rect)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 card_data = extract_card_content(img)
+                
+                # Check top of card for EPIC if needed
+                if not card_data.get("epic"):
+                    epic_rect = fitz.Rect(col_x0 + (col_x1 - col_x0) * 0.45, card_y0 + 1.0, col_x1 - 2.0, card_y0 + 16.0)
+                    pix_epic = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=epic_rect)
+                    img_epic = Image.frombytes("RGB", [pix_epic.width, pix_epic.height], pix_epic.samples)
+                    try:
+                        ep_text = pytesseract.image_to_string(img_epic, lang='eng', config='--psm 7').strip()
+                        m_ep = EPIC_PATTERN.search(ep_text)
+                        if m_ep:
+                            card_data["epic"] = m_ep.group(0).replace(' ', '').upper()
+                    except Exception:
+                        pass
+
                 card_data["status"] = "Active"
-                page_cards.append(card_data)
+                
+                # STRICT VALIDATION: Only add if card contains an authentic voter name
+                # Never create fake voters from empty grid cells!
+                if card_data.get("nameHi") and card_data["nameHi"] != "मतदाता":
+                    if card_data.get("relativeNameHi") or card_data.get("epic") or card_data.get("age"):
+                        page_cards.append(card_data)
 
     doc.close()
     return p_idx, page_cards, page_epics
@@ -344,16 +436,26 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
     serial_no = 1
     
     for p_idx, page_cards, page_epics in results:
-        if not page_epics and not page_cards:
+        if not page_cards:
             continue
             
-        target_len = len(page_epics)
-        
-        for i in range(max(target_len, len(page_cards))):
-            card = page_cards[i] if i < len(page_cards) else {}
-            epic = card.get("epic") or (page_epics[i] if i < len(page_epics) else f"VOTER_{serial_no}")
+        for card in page_cards:
+            voter_name = (card.get("nameHi") or "").strip()
             
-            voter_name = card.get("nameHi") or "मतदाता"
+            # STRICT FILTER: Discard any invalid / dummy / blank voter records
+            if not voter_name or voter_name == "मतदाता" or len(voter_name) < 2:
+                continue
+            if re.match(r'^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या)', voter_name):
+                continue
+                
+            epic = card.get("epic")
+            if not epic:
+                # Only fallback if valid relative and age exist (genuine card whose epic was smudged)
+                if card.get("relativeNameHi") or card.get("age"):
+                    epic = f"VOTER_{serial_no}"
+                else:
+                    continue
+
             rel_name = card.get("relativeNameHi", "")
             rel_type = card.get("relationType", "पिता")
             house = card.get("houseNo", "")
