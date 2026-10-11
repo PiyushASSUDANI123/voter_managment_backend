@@ -156,8 +156,8 @@ router.get('/organizations/:id/slip-config', verifyToken, async (req, res) => {
 
 router.put('/organizations/:id/slip-config', verifyToken, async (req, res) => {
   try {
-    if (req.user.role !== 'admin' && req.user.organizationId !== req.params.id) {
-      return res.status(403).json({ message: 'Access denied.' });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'केवल एडमिन ही पर्ची ब्रांडिंग बदल सकते हैं।' });
     }
     const incomingConfig = req.body.slipConfig || req.body;
     const updated = await Organization.findByIdAndUpdate(
