@@ -560,12 +560,18 @@ router.get('/slip-config', async (req, res) => {
 
 router.put('/slip-config', async (req, res) => {
   try {
-    if (req.user?.role !== 'admin') {
-      return res.status(403).json({ message: 'केवल एडमिन ही पर्ची ब्रांडिंग बदल सकते हैं।' });
-    }
     let orgId = req.user?.organizationId || 'org_default';
     const selected = req.body?.organizationId || req.headers['x-organization-id'] || req.headers['x-client-id'] || req.query?.organizationId;
-    if (selected && selected !== 'all') orgId = selected;
+    
+    // Admins can customize any organization; clients/tenants can customize their own organization
+    if (selected && selected !== 'all' && selected !== orgId) {
+      if (req.user?.role !== 'admin') {
+        return res.status(403).json({ message: 'केवल एडमिन ही अन्य खातों/संगठनों की पर्ची बदल सकते हैं।' });
+      }
+      orgId = selected;
+    } else if (selected && selected === orgId) {
+      orgId = selected;
+    }
 
     const incomingConfig = req.body?.slipConfig || req.body;
     const org = await Organization.findByIdAndUpdate(
