@@ -16,6 +16,7 @@ const userRoutes = require('./routes/users');
 const featureRoutes = require('./routes/features');
 
 const app = express();
+app.set('trust proxy', true);
 const PORT = process.env.PORT || 5002;
 
 // Rate Limiting (Token Bucket / Throttling)

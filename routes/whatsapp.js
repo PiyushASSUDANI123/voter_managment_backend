@@ -36,6 +36,27 @@ async function getEffectiveMetaConfig(orgId) {
 }
 
 /**
+ * Resolve public base URL for voter slip images
+ */
+function getPublicBaseUrl(req) {
+  if (process.env.PUBLIC_URL) {
+    return process.env.PUBLIC_URL.trim().replace(/\/+$/, '');
+  }
+  const forwardedProto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : req.protocol || 'https');
+  const forwardedHost = req.headers['x-forwarded-host'] || req.get('host') || '';
+  if (
+    !forwardedHost ||
+    forwardedHost.includes('localhost') ||
+    forwardedHost.includes('127.0.0.1') ||
+    forwardedHost.startsWith('192.168.') ||
+    forwardedHost.startsWith('10.')
+  ) {
+    return 'https://vijaysetu.piyushassudani.in';
+  }
+  return `${forwardedProto}://${forwardedHost}`;
+}
+
+/**
  * Save rendered voter slip base64 image to disk
  */
 function saveSlipImage(dispatchId, dataUrl) {
@@ -372,7 +393,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
     if (slipImageDataUrl) {
       savedImage = saveSlipImage(dispatchId, slipImageDataUrl);
       if (savedImage) {
-        publicImageUrl = `${req.protocol}://${req.get('host')}/uploads/slips/${savedImage.filename}`;
+        publicImageUrl = `${getPublicBaseUrl(req)}/uploads/slips/${savedImage.filename}`;
         mediaId = await uploadMediaToMeta({
           token,
           phoneNumberId,
@@ -394,14 +415,15 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 • मतदाता सूची क्रमांक: *${serial}*
 • मतदान केंद्र: *${boothName}*
 
-🇮🇳 मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।
+${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${publicImageUrl}\n\n` : ''}🇮🇳 मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।
 *— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
 
     let response;
     let lastError = null;
 
-    // 1. If we have uploaded image to Meta media, try sending template with image header or image message
-    if (mediaId) {
+    // 1. If we have uploaded image or have a public image URL, try sending template with image header or image message
+    if (mediaId || publicImageUrl) {
+      const imageParam = mediaId ? { id: mediaId } : { link: publicImageUrl };
       if (templateName) {
         try {
           const templatePayload = {
@@ -416,7 +438,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
                 {
                   type: 'header',
                   parameters: [
-                    { type: 'image', image: { id: mediaId } }
+                    { type: 'image', image: imageParam }
                   ]
                 },
                 {
@@ -455,7 +477,7 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
               to: recipientPhone,
               type: 'image',
               image: {
-                id: mediaId,
+                ...imageParam,
                 caption: messageText
               }
             },
@@ -625,7 +647,7 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
     if (slipImageDataUrl) {
       savedImage = saveSlipImage(dispatch._id, slipImageDataUrl);
       if (savedImage) {
-        publicImageUrl = `${req.protocol}://${req.get('host')}/uploads/slips/${savedImage.filename}`;
+        publicImageUrl = `${getPublicBaseUrl(req)}/uploads/slips/${savedImage.filename}`;
         await SlipDispatch.updateOne({ _id: dispatch._id }, { $set: { slipImageUrl: publicImageUrl } });
       }
     }

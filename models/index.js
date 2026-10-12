@@ -70,6 +70,7 @@ const voterSchema = new mongoose.Schema({
   assignedWorker: { type: String, default: null },
   villageName: { type: String },
   villageNameHi: { type: String },
+  boothName: { type: String },
   organizationId: { type: String, required: true },
   familyId: { type: String },
   createdAt: { type: Date, default: Date.now }

@@ -116,10 +116,16 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
       .skip((page - 1) * pageSize)
       .limit(pageSize)
       .lean();
+
+    const formattedVoters = voters.map((v) => ({
+      ...v,
+      phone: v.mobileNo || v.phone || '',
+      mobileNo: v.mobileNo || v.phone || '',
+    }));
       
     res.json(req.query.page || req.query.pageSize
-      ? { data: voters, page, pageSize, total: count }
-      : voters);
+      ? { data: formattedVoters, page, pageSize, total: count }
+      : formattedVoters);
   } catch (err) {
     console.error('Voter search failed:', err.message);
     res.status(500).json({ message: 'Voter records could not be loaded.' });
@@ -140,7 +146,12 @@ router.get('/family/:houseNo', verifyToken, requireModule('voters', 'community')
     }
     
     const voters = await Voter.find(query).sort({ serialNo: 1 }).lean();
-    res.json(voters);
+    const formattedVoters = voters.map((v) => ({
+      ...v,
+      phone: v.mobileNo || v.phone || '',
+      mobileNo: v.mobileNo || v.phone || '',
+    }));
+    res.json(formattedVoters);
   } catch (err) {
     console.error('Household voter query failed:', err.message);
     res.status(500).json({ message: 'Household records could not be loaded.' });
@@ -158,6 +169,7 @@ router.put('/:id', verifyToken, (req, res, next) => {
     
     const columns = {
       phone: 'mobileNo',
+      mobileNo: 'mobileNo',
       caste: 'caste',
       surety: 'surety',
       isMigrant: 'isMigrant',
@@ -178,6 +190,10 @@ router.put('/:id', verifyToken, (req, res, next) => {
       wardNo: 'wardNo',
       partNo: 'partNo',
       serialNo: 'serialNo',
+      boothName: 'boothName',
+      villageName: 'villageName',
+      villageNameHi: 'villageNameHi',
+      occupation: 'occupation',
     };
     
     const updates = {};
