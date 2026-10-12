@@ -665,8 +665,10 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
 • *मतदान केंद्र:* ${boothName}
 • *आयु / लिंग:* ${ageGender}`;
 
+    const viewUrl = `${getPublicBaseUrl(req)}/api/whatsapp/view/${dispatch._id}`;
+
     if (publicImageUrl) {
-      messageText += `\n\n🖼️ *डिजिटल पर्ची फोटो देखें व डाउनलोड करें:*\n${publicImageUrl}`;
+      messageText += `\n\n🖼️ *डिजिटल मतदाता पर्ची / पैम्फलेट फोटो यहाँ देखें:*\n${viewUrl}`;
     }
 
     messageText += `\n\n🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_\n*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
@@ -681,11 +683,144 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
       waLink,
       messageText,
       slipImageUrl: publicImageUrl,
+      viewUrl,
       hasPhoto: Boolean(savedImage)
     });
   } catch (err) {
     console.error('Manual WhatsApp dispatch error:', err.message);
     res.status(500).json({ message: 'मैनुअल WhatsApp संदेश तैयार करने में त्रुटि हुई।' });
+  }
+});
+
+// Public HTML page for viewing voter slip with OpenGraph meta tags for WhatsApp rich preview
+router.get('/view/:id', async (req, res) => {
+  try {
+    const dispatch = await SlipDispatch.findById(req.params.id).lean();
+    if (!dispatch) {
+      return res.status(404).send(`
+        <!DOCTYPE html><html><head><meta charset="utf-8"><title>पर्ची नहीं मिली</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:50px;background:#0f172a;color:#fff;">
+          <h2>मतदाता पर्ची नहीं मिली या लिंक समाप्त हो गया है।</h2>
+        </body></html>
+      `);
+    }
+
+    const baseUrl = getPublicBaseUrl(req);
+    const imageUrl = dispatch.slipImageUrl || `${baseUrl}/uploads/slips/slip_${dispatch._id}.jpg`;
+    const voterName = dispatch.voterName || 'मतदाता';
+    const epic = dispatch.voterEpic || 'N/A';
+
+    res.send(`<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>डिजिटल मतदाता पर्ची - ${voterName}</title>
+  <meta property="og:title" content="🗳️ आधिकारिक डिजिटल मतदाता पर्ची - ${voterName}" />
+  <meta property="og:description" content="पहचान पत्र (EPIC): ${epic} • आगामी चुनाव हेतु आपकी आधिकारिक डिजिटल मतदाता सूचना पर्ची" />
+  <meta property="og:image" content="${imageUrl}" />
+  <meta property="og:image:secure_url" content="${imageUrl}" />
+  <meta property="og:image:type" content="image/jpeg" />
+  <meta property="og:image:width" content="600" />
+  <meta property="og:image:height" content="800" />
+  <meta property="og:type" content="article" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="🗳️ डिजिटल मतदाता पर्ची - ${voterName}" />
+  <meta name="twitter:image" content="${imageUrl}" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .slip-container {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 20px;
+      max-width: 620px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 20px 40px rgba(0,0,0,0.5);
+    }
+    .slip-img {
+      width: 100%;
+      max-width: 580px;
+      height: auto;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      display: block;
+      margin: 16px auto;
+    }
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 20px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 14px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-download {
+      background: #059669;
+      color: #ffffff;
+      border: none;
+    }
+    .btn-download:hover { background: #047857; }
+    .btn-print {
+      background: #334155;
+      color: #ffffff;
+      border: 1px solid #475569;
+    }
+    .btn-print:hover { background: #475569; }
+  </style>
+</head>
+<body>
+  <div class="slip-container">
+    <div style="font-size: 13px; font-weight: 800; color: #34d399; letter-spacing: 0.05em; text-transform: uppercase;">
+      🇮🇳 चुनाव आयोग प्रारूप डिजिटल पर्ची
+    </div>
+    <h1 style="font-size: 20px; margin: 6px 0; color: #ffffff;">
+      ${voterName} की मतदाता पर्ची
+    </h1>
+    <p style="margin: 0; font-size: 13px; color: #94a3b8;">
+      EPIC: <strong style="color: #f1f5f9;">${epic}</strong>
+    </p>
+
+    <img src="${imageUrl}" alt="मतदाता पर्ची" class="slip-img" />
+
+    <div class="btn-group">
+      <a href="${imageUrl}" download="VoterSlip_${epic}.jpg" class="btn btn-download">
+        📥 पर्ची डाउनलोड करें (Download Slip)
+      </a>
+      <button onclick="window.print()" class="btn btn-print">
+        🖨️ प्रिंट करें (Print)
+      </button>
+    </div>
+  </div>
+</body>
+</html>`);
+  } catch (err) {
+    console.error('Slip public view error:', err);
+    res.status(500).send('Error loading slip');
   }
 });
 
