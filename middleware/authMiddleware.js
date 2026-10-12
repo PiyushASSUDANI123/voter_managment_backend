@@ -9,7 +9,7 @@ exports.verifyToken = async (req, res, next) => {
   try {
     claims = jwt.verify(token, process.env.JWT_SECRET);
   } catch (err) {
-    return res.status(400).json({ message: 'Invalid Token' });
+    return res.status(401).json({ message: 'Invalid or Expired Token' });
   }
 
   try {
