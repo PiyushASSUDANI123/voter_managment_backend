@@ -443,14 +443,24 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
                 },
                 {
                   type: 'body',
-                  parameters: [
-                    { type: 'text', text: voterName },
-                    { type: 'text', text: dbVoter.epic || '—' },
-                    { type: 'text', text: ward },
-                    { type: 'text', text: part },
-                    { type: 'text', text: String(dbVoter.serialNo || '—') },
-                    { type: 'text', text: boothName }
-                  ]
+                  parameters: templateName === 'voter_slip_card_hi'
+                    ? [
+                        { type: 'text', text: voterName },
+                        { type: 'text', text: voterName },
+                        { type: 'text', text: dbVoter.epic || '—' },
+                        { type: 'text', text: ward },
+                        { type: 'text', text: part },
+                        { type: 'text', text: String(dbVoter.serialNo || '—') },
+                        { type: 'text', text: boothName }
+                      ]
+                    : [
+                        { type: 'text', text: voterName },
+                        { type: 'text', text: dbVoter.epic || '—' },
+                        { type: 'text', text: ward },
+                        { type: 'text', text: part },
+                        { type: 'text', text: String(dbVoter.serialNo || '—') },
+                        { type: 'text', text: boothName }
+                      ]
                 }
               ]
             }
@@ -505,14 +515,24 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
             components: [
               {
                 type: 'body',
-                parameters: [
-                  { type: 'text', text: voterName },
-                  { type: 'text', text: dbVoter.epic || '—' },
-                  { type: 'text', text: ward },
-                  { type: 'text', text: part },
-                  { type: 'text', text: String(dbVoter.serialNo || '—') },
-                  { type: 'text', text: boothName }
-                ]
+                parameters: templateName === 'voter_slip_card_hi'
+                  ? [
+                      { type: 'text', text: voterName },
+                      { type: 'text', text: voterName },
+                      { type: 'text', text: dbVoter.epic || '—' },
+                      { type: 'text', text: ward },
+                      { type: 'text', text: part },
+                      { type: 'text', text: String(dbVoter.serialNo || '—') },
+                      { type: 'text', text: boothName }
+                    ]
+                  : [
+                      { type: 'text', text: voterName },
+                      { type: 'text', text: dbVoter.epic || '—' },
+                      { type: 'text', text: ward },
+                      { type: 'text', text: part },
+                      { type: 'text', text: String(dbVoter.serialNo || '—') },
+                      { type: 'text', text: boothName }
+                    ]
               }
             ]
           }
