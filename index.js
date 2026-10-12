@@ -40,6 +40,13 @@ app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/privacy.html', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
+app.get('/privacy', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'privacy.html')));
+app.get('/terms.html', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
+app.get('/terms', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'terms.html')));
+
 app.use('/api', apiLimiter); // Apply rate limiter to all API routes
 
 // Request Logging Middleware
