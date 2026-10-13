@@ -745,36 +745,33 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             l2_words = [w[4] for w in page.get_text('words', clip=line2_rect)]
             l2_digital_candidate, dig_detected_rel = clean_relative_info(" ".join(l2_words))
 
-            name = l1_digital_candidate
-            rel_name = l2_digital_candidate
-            if dig_detected_rel in ['पति', 'माता']:
+            # Pillar 2 & 3: Ensemble OCR with Stamp/Watermark Removal (Produces authentic visual Hindi)
+            ocr_name = ""
+            ocr_rel = ""
+            try:
+                pix1 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line1_rect)
+                img1_np = np.array(Image.frombytes('RGB', [pix1.width, pix1.height], pix1.samples))
+                prep1 = remove_stamps_and_watermarks(img1_np, is_hindi=True)
+                ocr_name = ensemble_ocr_line(prep1)
+            except Exception:
+                pass
+
+            try:
+                pix2 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line2_rect)
+                img2_np = np.array(Image.frombytes('RGB', [pix2.width, pix2.height], pix2.samples))
+                prep2 = remove_stamps_and_watermarks(img2_np, is_hindi=True)
+                ocr_l2 = ensemble_ocr_line(prep2)
+                ocr_rel, ocr_det_rel = clean_relative_info(ocr_l2)
+                if ocr_det_rel in ['पति', 'माता']:
+                    rel_type = ocr_det_rel
+            except Exception:
+                pass
+
+            # Prioritize visual OCR since SEC PDFs often contain legacy custom font encoding (e.g. 'हलररलरल' -> 'हीरालाल')
+            name = ocr_name if (ocr_name and len(ocr_name) >= 2) else l1_digital_candidate
+            rel_name = ocr_rel if (ocr_rel and len(ocr_rel) >= 2) else l2_digital_candidate
+            if not ocr_rel and dig_detected_rel in ['पति', 'माता']:
                 rel_type = dig_detected_rel
-
-            # If digital extraction was empty or insufficient, fall back to Pillar 2 & 3 Ensemble OCR
-            if not name or len(name) < 2:
-                try:
-                    pix1 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line1_rect)
-                    img1_np = np.array(Image.frombytes('RGB', [pix1.width, pix1.height], pix1.samples))
-                    prep1 = remove_stamps_and_watermarks(img1_np, is_hindi=True)
-                    ocr_name = ensemble_ocr_line(prep1)
-                    if ocr_name and len(ocr_name) >= 2:
-                        name = ocr_name
-                except Exception:
-                    pass
-
-            if not rel_name or len(rel_name) < 2:
-                try:
-                    pix2 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line2_rect)
-                    img2_np = np.array(Image.frombytes('RGB', [pix2.width, pix2.height], pix2.samples))
-                    prep2 = remove_stamps_and_watermarks(img2_np, is_hindi=True)
-                    ocr_l2 = ensemble_ocr_line(prep2)
-                    ocr_rel, ocr_det_rel = clean_relative_info(ocr_l2)
-                    if ocr_rel and len(ocr_rel) >= 2:
-                        rel_name = ocr_rel
-                        if ocr_det_rel in ['पति', 'माता']:
-                            rel_type = ocr_det_rel
-                except Exception:
-                    pass
 
             # Fallbacks for House No and Age
             if not house_no or house_no == '-':
