@@ -67,6 +67,7 @@ const voterSchema = new mongoose.Schema({
   mobileNo: { type: String },
   caste: { type: String },
   supportStatus: { type: String, default: 'unmarked' },
+  status: { type: String, default: 'Active' },
   voted: { type: Boolean, default: false },
   votedAt: { type: Date, default: null },
   surety: { type: String },

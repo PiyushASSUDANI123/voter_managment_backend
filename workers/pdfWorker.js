@@ -46,72 +46,75 @@ const ExcelJS = require('exceljs');
 
     let finalVoterList = [];
 
-    if (useOcr) {
-      // 1. High-Performance Native Python Engine (if available)
-      const pythonOk = await isPythonAvailable();
-      if (pythonOk) {
-        console.log(`Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
-        updateProgress(20);
-        const path = require('path');
-        const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
-        const excelDir = path.join(__dirname, '../uploads/excels');
-        if (!fs.existsSync(excelDir)) fs.mkdirSync(excelDir, { recursive: true });
-        const targetExcelPath = path.join(excelDir, excelFilename);
+    // 1. High-Performance Native Python Engine (if available)
+    const pythonOk = await isPythonAvailable();
+    if (pythonOk) {
+      console.log(`Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
+      updateProgress(20);
+      const path = require('path');
+      const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
+      const excelDir = path.join(__dirname, '../uploads/excels');
+      if (!fs.existsSync(excelDir)) fs.mkdirSync(excelDir, { recursive: true });
+      const targetExcelPath = path.join(excelDir, excelFilename);
 
-        try {
-          await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
-          updateProgress(50);
-          
-          const workbook = new ExcelJS.Workbook();
-          await workbook.xlsx.readFile(targetExcelPath);
-          const worksheet = workbook.getWorksheet('मतदाता सूची') || workbook.worksheets[0];
-          
-          worksheet.eachRow((row, rowNumber) => {
-            if (rowNumber === 1) return; // header
-            const values = row.values;
-            const epic = String(values[2] || '').trim();
-            const rawName = String(values[3] || '').trim();
-            const cleanName = cleanHindiText(rawName);
+      try {
+        await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
+        updateProgress(50);
+        
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.readFile(targetExcelPath);
+        const worksheet = workbook.getWorksheet('मतदाता सूची') || workbook.worksheets[0];
+        
+        worksheet.eachRow((row, rowNumber) => {
+          if (rowNumber === 1) return; // header
+          const values = row.values;
+          const serialVal = values[1] ? parseInt(values[1], 10) : null;
+          const epic = String(values[2] || '').trim();
+          const rawName = String(values[3] || '').trim();
+          const cleanName = cleanHindiText(rawName);
 
-            // STRICT VALIDATION: Require authentic voter name
-            if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
-              const cleanRel = cleanHindiText(String(values[4] || ''));
-              const cleanH = cleanHouseNo(String(values[6] || ''));
-              let ageVal = values[7] ? parseInt(values[7], 10) : null;
-              if (!ageVal || ageVal < 18 || ageVal > 125) ageVal = null;
-              
-              let relType = String(values[5] || '').trim();
-              if (!['पिता', 'पति', 'माता', 'अन्य'].includes(relType)) {
-                relType = 'पिता';
-              }
-              
-              let genderVal = String(values[8] || '').trim();
-              if (relType === 'पति') {
-                genderVal = 'स्त्री';
-              } else if (['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती'].some(fem => cleanName.includes(fem))) {
-                genderVal = 'स्त्री';
-              } else if (!['पुरुष', 'स्त्री'].includes(genderVal)) {
-                genderVal = 'पुरुष';
-              }
-
-              finalVoterList.push({
-                epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
-                nameHi: cleanName,
-                relativeNameHi: cleanRel.length >= 2 ? cleanRel : '',
-                relationType: relType,
-                houseNo: cleanH,
-                age: ageVal,
-                gender: genderVal,
-                status: String(values[9] || 'Active').trim()
-              });
+          // STRICT VALIDATION: Require authentic voter name
+          if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
+            const cleanRel = cleanHindiText(String(values[4] || ''));
+            const cleanH = cleanHouseNo(String(values[6] || ''));
+            let ageVal = values[7] ? parseInt(values[7], 10) : null;
+            if (!ageVal || ageVal < 18 || ageVal > 125) ageVal = null;
+            
+            let relType = String(values[5] || '').trim();
+            if (!['पिता', 'पति', 'माता', 'अन्य'].includes(relType)) {
+              relType = 'पिता';
             }
-          });
-          console.log(`Python engine extracted ${finalVoterList.length} authentic voters with high precision.`);
-        } catch (pyErr) {
-          console.warn("Python extraction failed, falling back to local JS OCR:", pyErr.message);
-          finalVoterList = [];
-        }
+            
+            let genderVal = String(values[8] || '').trim();
+            if (relType === 'पति') {
+              genderVal = 'स्त्री';
+            } else if (['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती'].some(fem => cleanName.includes(fem))) {
+              genderVal = 'स्त्री';
+            } else if (!['पुरुष', 'स्त्री'].includes(genderVal)) {
+              genderVal = 'पुरुष';
+            }
+
+            finalVoterList.push({
+              serialNo: serialVal || (finalVoterList.length + 1),
+              epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
+              nameHi: cleanName,
+              relativeNameHi: cleanRel.length >= 2 ? cleanRel : '',
+              relationType: relType,
+              houseNo: cleanH,
+              age: ageVal,
+              gender: genderVal,
+              status: String(values[9] || 'Active').trim()
+            });
+          }
+        });
+        console.log(`Python engine extracted ${finalVoterList.length} authentic voters with high precision.`);
+      } catch (pyErr) {
+        console.warn("Python extraction failed, falling back to local JS OCR:", pyErr.message);
+        finalVoterList = [];
       }
+    }
+
+    if (finalVoterList.length === 0 && useOcr) {
 
       // 2. Fallback to Local JS OCR if Python engine was not executed
       if (finalVoterList.length === 0) {
@@ -242,13 +245,18 @@ const ExcelJS = require('exceljs');
         return hasEpic || hasAuthenticDetails;
       })
       .map((voter, i) => {
+        const serialNumber = voter.serialNo || (i + 1);
+        const voterStatus = voter.status || 'Active';
+
         const updateFields = {
+          serialNo: serialNumber,
           nameHi: voter.nameHi,
           relativeNameHi: voter.relativeNameHi,
           relationType: voter.relationType,
           houseNo: voter.houseNo,
           age: voter.age,
           gender: voter.gender,
+          status: voterStatus,
           nameEn: "",
           relativeNameEn: ""
         };
@@ -260,7 +268,8 @@ const ExcelJS = require('exceljs');
         const setOnInsertFields = {
           _id: `voter_${crypto.randomUUID()}`,
           epic: voter.epic,
-          serialNo: i + 1,
+          serialNo: serialNumber,
+          status: voterStatus,
           organizationId: organizationId,
         };
 
