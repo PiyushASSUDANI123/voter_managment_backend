@@ -337,10 +337,17 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                     "status": status
                 })
 
+    # Check if page is non-voter page (cover, map, or summary table)
+    page_text = page.get_text()
+    is_non_voter_page = bool(re.search(r'संक्षिप्त विवरण|निर्वाचकों की संख्या|मतदाताओं की संख्या|वार्ड का नक्शा|सारणी', page_text))
+    if is_non_voter_page and len(photo_rects) == 0:
+        doc.close()
+        return p_idx, [], page_epics
+
     # =========================================================================
     # PATH B: SCANNED PAGE GRID EXTRACTION (If digital search did not find epics)
     # =========================================================================
-    if len(page_cards) == 0 and p_idx >= 2:
+    if len(page_cards) == 0 and p_idx >= 2 and not is_non_voter_page:
         cols = [
             (34.4, 208.4),
             (208.15, 381.65),
@@ -450,12 +457,13 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
             # STRICT FILTER: Discard any invalid / dummy / blank voter records
             if not voter_name or voter_name == "मतदाता" or len(voter_name) < 2:
                 continue
-            if re.match(r'^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या)', voter_name):
+            if re.match(r'^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या|ग्रामपंचायत|प्रकार|घटक)', voter_name):
                 continue
                 
             epic = card.get("epic")
             if not epic:
-                if card.get("relativeNameHi") or card.get("age"):
+                # Discard if it doesn't have authentic relative and authentic age
+                if card.get("relativeNameHi") and len(card.get("relativeNameHi")) >= 2 and card.get("age") and 18 <= int(card.get("age")) <= 125:
                     epic = f"VOTER_{serial_counter}"
                 else:
                     continue
