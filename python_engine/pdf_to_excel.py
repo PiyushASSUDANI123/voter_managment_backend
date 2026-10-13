@@ -609,7 +609,13 @@ def clean_house_no(raw: str) -> str:
         suffix = (m_num.group(2) or '').replace(' ', '')
         return f"{digits_part}{suffix}"
 
-    # If no valid digits are found (e.g. '. आईसीआईसीआई', 'मका', 'नि लि'), leave empty ('-')
+    # Preserve meaningful Hindi area/colony landmarks if present (e.g. बाईपास, माधव पैलेस, शारदानगर, आईसीआईसीआई बैंक)
+    landmark = decode_sec_rajasthan(re.sub(r'[^\u0900-\u097F\s]', '', s)).strip()
+    banned_landmarks = {'मकान', 'संख्या', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पुरुष', 'स्त्री', 'नाम', 'पिता', 'पति', 'माता', 'फोटो', 'उपलब्ध'}
+    if len(landmark) >= 3 and landmark not in banned_landmarks:
+        return landmark
+
+    # If no valid digits or landmarks are found, leave empty ('-')
     return "-"
 
 
