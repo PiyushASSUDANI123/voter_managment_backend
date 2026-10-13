@@ -1,4 +1,4 @@
-# VijaySetu High-Performance Electoral Roll PDF-to-Excel Requirements
+# VijaySetu 5-Pillar Electoral Roll PDF-to-Excel Engine Requirements
 # Run: pip install -r requirements.txt
 
 PyMuPDF>=1.24.0
@@ -6,3 +6,7 @@ pandas>=2.0.0
 openpyxl>=3.1.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+torch>=2.0.0
+easyocr>=1.7.0
