@@ -248,7 +248,8 @@ const ExcelJS = require('exceljs');
           relationType: voter.relationType,
           houseNo: voter.houseNo,
           age: voter.age,
-          gender: voter.gender
+          gender: voter.gender,
+          nameEn: ""
         };
 
         if (wardNo) updateFields.wardNo = wardNo;
@@ -259,7 +260,7 @@ const ExcelJS = require('exceljs');
           _id: `voter_${crypto.randomUUID()}`,
           epic: voter.epic,
           serialNo: i + 1,
-          nameEn: voter.nameHi.replace(/^(?:ara|ava|sl|no|nam|cr)[:\s\-]+/i, '').trim(),
+          nameEn: "",
           organizationId: organizationId,
         };
 

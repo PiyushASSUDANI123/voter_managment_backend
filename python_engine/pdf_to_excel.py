@@ -59,26 +59,38 @@ def clean_hindi_name(raw: str) -> str:
         return ""
     n = raw.strip()
     
+    # Strip anything before or ending in 'नाम' (label bleed)
+    if 'नाम' in n:
+        parts = n.split('नाम')
+        after = parts[-1].strip()
+        if len(after) >= 2:
+            n = after
+
+    # Remove leading colons, hyphens, slashes, or noise
+    n = re.sub(r'^[:ः\-\.\s\/\|]+', '', n)
+
     # Remove leading OCR noise or label prefixes (e.g. 'ava:', 'ara:', 'नाम:', 'पिता:', 'पति:', 'मतदाता का नाम:')
     n = re.sub(r'^(?:ava|ara|name|no|sl|s|voter|nam|na|sn|cr)?[:\-\.\s]+', '', n, flags=re.IGNORECASE)
-    n = re.sub(r'^(?:[\|\[\(\\\/]*\s*(?:(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नाम्|नाभ)|(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*(?:नाम|नाम्|नाभ)?))\s*[:ः\-\.\s]+', '', n, flags=re.IGNORECASE)
-    n = re.sub(r'^(?:मकान|गृह)\s*(?:संख्या)?\s*[:ः\-\.\s]+', '', n, flags=re.IGNORECASE)
     
+    # Strip misread label prefixes (e.g. 'किया', 'क्या', 'या', 'नि', 'नी', 'पी', 'फेम', 'ग्राम', etc.)
+    n = re.sub(r'^(?:किया|क्या|या|नि|नी|पी|फी|मी|गी|सी|दी|जा|फेम|ग्राम|प्राम|ताम|बाम|दाम|माप|प्र|मा|भा|का|मो)\s+', '', n)
+    n = re.sub(r'^(?:मकान|गृह)\s*(?:संख्या)?\s*[:ः\-\.\s]+', '', n, flags=re.IGNORECASE)
+
     # Strictly remove English / Latin characters (English not permitted in Hindi name)
     n = re.sub(r'[a-zA-Z]+', ' ', n)
     
     # Strictly remove digits (numbers not permitted in name)
     n = re.sub(r'[\d\u0966-\u096F]+', ' ', n)
     
-    # Strip non-Devanagari symbols, brackets, and punctuation (e.g. '[नाम', ']')
-    n = re.sub(r'[\|\[\]\(\)\{\}«»®©\'\"\‘\’\`\.\,\^°+।॥~!\?=\+\*&%\$#@;:\/\\_\-¢¥<>]+', ' ', n)
+    # Strip non-Devanagari symbols, brackets, and punctuation
+    n = re.sub(r'[\|\[\]\(\)\{\}«»®©\'\"\‘\’\`\.\,\^°+।॥~!\?=\+\*&%\$#@;:\/\\_\-¢¥<>०]+', ' ', n)
     
-    # Truncate if subsequent field label leaked into name (requires preceding whitespace or explicit colon)
+    # Truncate if subsequent field label leaked into name
     n = re.split(r'\s+(?:(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|(?:मकान|गृह)\s*(?:संख्या)?|(?:आयु|उम्र)\s*[:ः\-]?\s*\d+|(?:लिंग|Sex)\s*[:ः\-]?\s*(?:पुरुष|स्त्री|महिला|male|female))\b', n, flags=re.IGNORECASE)[0]
 
     # Iteratively remove field labels or bleed suffixes
     label_bleed = [
-        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|नातेदार|संबंधी|पित|मका|मकान|गृह|है|हे|कै|ब्|र्|म्|न्|न|प|व|क|गम|हक|रत|हि|क्|ख|लक|खख|पु)$',
+        r'\s+(?:नाम|नाम्|नाभ|मतदाता|पिता|पति|माता|अन्य|नातेदार|संबंधी|पित|मका|मकान|गृह|है|हे|कै|ब्|र्|म्|न्|न|प|व|क|गम|हक|रत|हि|क्|ख|लक|खख|पु|Photo|Available|is|Avail|Ph|Av|P|A)$',
         r'^(?:श्री|श्रीमती|सुश्री|डा|डॉ)\s+'
     ]
     
@@ -93,25 +105,29 @@ def clean_hindi_name(raw: str) -> str:
                 changed = True
         n = n_c
 
-    # Strip single trailing fragment when attached to common suffixes
-    tokens = n.split()
-    if len(tokens) >= 3 and len(tokens[-1]) <= 2:
-        if tokens[-2] in ['कुमार', 'देवी', 'सिंह', 'लाल', 'राम', 'चंद', 'मल', 'बाई', 'कंवर', 'प्रसाद', 'शर्मा', 'वर्मा', 'जैन', 'गुप्ता']:
-            tokens.pop()
-            n = ' '.join(tokens)
-    elif len(tokens) >= 2 and len(tokens[-1]) == 1 and tokens[-1] in ['क', 'ख', 'ग', 'घ', 'त', 'र', 'स', 'ह', 'ल', 'म', 'न', 'प', 'व', 'य']:
+    # Strip trailing noise tokens / fragments
+    tokens = [t for t in n.split() if t]
+    while len(tokens) > 1 and (len(tokens[-1]) <= 2 and tokens[-1] in ['के', 'कर', 'द', 'ह', 'ष', 'ु', 'ख', 'क', 'ग', 'घ', 'त', 'र', 'स', 'ल', 'म', 'न', 'प', 'व', 'य', 'है', 'हे', 'की', 'का', 'पर']):
         tokens.pop()
-        n = ' '.join(tokens)
+    n = ' '.join(tokens)
 
     # Normalize common OCR typos in Devanagari
     n = re.sub(r'लालन$', 'लाल', n)
-    
+    n = re.sub(r'^झोहन', 'सोहन', n)
+    n = re.sub(r'^[भाा]ंगीलाल', 'मांगीलाल', n)
+    n = re.sub(r'^(?:श्च|त्)म्पा', 'चम्पा', n)
+    n = re.sub(r'^हरीयजर', 'हरीराम', n)
+    n = re.sub(r'हरीराप', 'हरीराम', n)
+    n = re.sub(r'^झुरेश', 'सुरेश', n)
+    n = re.sub(r'^क़ेशा', 'केशा', n)
+    n = re.sub(r'^श्स्तीराम', 'बस्तीराम', n)
+
     # Strictly allow ONLY Devanagari characters and single spaces
     n = re.sub(r'[^\u0900-\u097F\s]', '', n)
     cleaned = re.sub(r'\s+', ' ', n).strip()
 
     # Reject administrative keywords, labels, or particles accidentally parsed as names
-    banned = {'मतदाता', 'कलेण्डर', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'अनुभाग', 'प्रारूप', 'मतदान', 'हस्ताक्षर', 'फोटो', 'उपलब्ध', 'संख्या', 'भाग', 'सूची', 'ग्राम', 'नगर', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पिता', 'पति', 'माता', 'अन्य', 'हु', 'है', 'हे', 'की', 'का', 'के', 'नाम'}
+    banned = {'मतदाता', 'कलेण्डर', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'अनुभाग', 'प्रारूप', 'मतदान', 'हस्ताक्षर', 'फोटो', 'उपलब्ध', 'संख्या', 'भाग', 'सूची', 'ग्राम', 'नगर', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पिता', 'पति', 'माता', 'अन्य', 'नातेदार', 'हु', 'है', 'हे', 'की', 'का', 'के', 'नाम'}
     if cleaned in banned or len(cleaned) < 2 or (len(cleaned.replace(' ', '')) <= 2 and cleaned in ['हु', 'है', 'हे', 'की', 'का', 'के', 'में', 'से', 'को', 'पर']):
         return ""
     if any(bw in cleaned for bw in ['विधानसभा', 'निर्वाचक', 'नामावली', 'कलेण्डर', 'प्रारूप', 'मतदान केंद्र', 'हस्ताक्षर', 'अनुभाग विवरण', 'मतदाताओं']):
@@ -144,10 +160,10 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
     ocr_txt = ""
     if pytesseract:
         try:
-            ocr_txt = pytesseract.image_to_string(img, lang='hin+eng', config='--psm 6')
+            ocr_txt = pytesseract.image_to_string(img, lang='hin', config='--psm 6')
         except Exception:
             try:
-                ocr_txt = pytesseract.image_to_string(img, lang='hin', config='--psm 6')
+                ocr_txt = pytesseract.image_to_string(img, lang='hin+eng', config='--psm 6')
             except Exception:
                 ocr_txt = ""
 
@@ -171,66 +187,53 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
             continue
 
         # 1. Match Relative Name & Relation Type
-        m_rel = re.search(r'(?:(पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
-        if m_rel and not relative_name:
-            relation_type = "अन्य" if m_rel.group(1) == "नातेदार" else m_rel.group(1)
-            raw_rel = m_rel.group(2)
-            # Truncate before subsequent labels
-            raw_rel = re.split(r'\s*(?:मकान|गृह|आयु|उम्र|लिंग|Sex)\b', raw_rel, flags=re.IGNORECASE)[0]
+        if any(w in line for w in ['पिता', 'पति', 'माता', 'अन्य', 'नातेदार']) and not relative_name:
+            m_rel_type = re.search(r'(पिता|पति|माता|अन्य|नातेदार)', line)
+            if m_rel_type:
+                relation_type = "अन्य" if m_rel_type.group(1) == "नातेदार" else m_rel_type.group(1)
+            raw_rel = re.split(r'\s*(?:मकान|गृह|आयु|उम्र|लिंग|Sex)\b', line, flags=re.IGNORECASE)[0]
             rel_candidate = clean_hindi_name(raw_rel)
-            if rel_candidate and len(rel_candidate) >= 2 and rel_candidate not in ['है', 'हे', 'की', 'का', 'के']:
+            if rel_candidate and len(rel_candidate) >= 2 and rel_candidate not in ['है', 'हे', 'की', 'का', 'के', 'पिता', 'पति', 'माता']:
                 relative_name = rel_candidate
             continue
 
         # 2. Match Voter Name
-        if not re.search(r'(?:(पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|मकान\s*संख्या|गृह\s*संख्या|आयु\s*[:ः\-]?\s*\d+|लिंग\s*[:ः\-])', line):
-            m_name = re.search(r'(?:[\|\[\(\\\/]*\s*(?:मतदाता\s*का\s*)?(?:नाम|नाम्|नाभ))\s*[:ः\-\. ]\s*([^\n\r]+)', line, re.IGNORECASE)
-            if m_name and not name:
-                cand = m_name.group(1)
-                # Truncate before subsequent labels
-                cand = re.split(r'\s*(?:(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|मकान|गृह|आयु|उम्र|लिंग|Sex)\b', cand, flags=re.IGNORECASE)[0]
-                if not any(w in cand for w in ['क्षेत्र', 'संख्या', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड']):
-                    name_candidate = clean_hindi_name(cand)
-                    if name_candidate and len(name_candidate) >= 2 and name_candidate not in ['है', 'हे', 'की', 'का']:
-                        name = name_candidate
+        if not name and not any(w in line for w in ['पिता', 'पति', 'माता', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'Sex']):
+            cand = re.split(r'\s*(?:(?:पिता|पति|माता|अन्य|नातेदार)\s*(?:का)?\s*नाम|मकान|गृह|आयु|उम्र|लिंग|Sex)\b', line, flags=re.IGNORECASE)[0]
+            name_candidate = clean_hindi_name(cand)
+            if name_candidate and len(name_candidate) >= 2 and name_candidate not in ['है', 'हे', 'की', 'का', 'मतदाता', 'नाम']:
+                name = name_candidate
+            continue
 
         # 3. Match House No
-        m_h = re.search(r'(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
-        if m_h and not house_no:
-            raw_h = re.split(r'\s*(?:आयु|उम्र|लिंग|Sex)\b', m_h.group(1), flags=re.IGNORECASE)[0]
+        if not house_no and ('मकान' in line or 'गृह' in line):
+            m_h = re.search(r'(?:मकान|गृह)\s*(?:संख्या)?\s*[:ः\-]?\s*(.+)', line, re.IGNORECASE)
+            raw_h = m_h.group(1) if m_h else line
+            raw_h = re.split(r'\s*(?:आयु|उम्र|लिंग|Sex)\b', raw_h, flags=re.IGNORECASE)[0]
             h_candidate = clean_house_no(raw_h)
             if h_candidate:
                 house_no = h_candidate
 
         # 4. Match Age
-        m_a = re.search(r'(?:आयु|आयू|आय|उम्र|age|वर्ष)\s*[:ः\-]?\s*(\d{1,3})', line, re.IGNORECASE)
-        if m_a and age is None:
-            try:
-                a_val = int(m_a.group(1))
-                if 18 <= a_val <= 125:
-                    age = a_val
-            except ValueError:
-                pass
+        if age is None and ('आयु' in line or 'उम्र' in line or 'वर्ष' in line):
+            m_a = re.search(r'(?:आयु|आयू|आय|उम्र|age|वर्ष)\s*[:ः\-]?\s*(\d{1,3})', line, re.IGNORECASE)
+            if m_a:
+                try:
+                    a_val = int(m_a.group(1))
+                    if 18 <= a_val <= 125:
+                        age = a_val
+                except ValueError:
+                    pass
 
         # 5. Match Gender
-        m_g = re.search(r'(?:लिंग|Sex|gender)\s*[:ः\-]?\s*([^\s\n\r]+)', line, re.IGNORECASE)
-        if m_g and not gender:
-            g = m_g.group(1).lower()
-            if any(x in g for x in ['पुरूष', 'पुरुष', 'पु', 'male', 'man', 'परुष']):
-                gender = "पुरुष"
-            elif any(x in g for x in ['स्त्री', 'महिला', 'eft', 'at', 'aft', 'ett', 'eff', 'fem', 'female']):
-                gender = "स्त्री"
-
-    # Fallback for name if still empty: pick first valid Devanagari line in crop
-    if not name:
-        for line in lines:
-            if not any(w in line for w in ['पिता', 'पति', 'माता', 'मकान', 'आयु', 'लिंग', 'क्षेत्र', 'संख्या', 'विधानसभा', 'वार्ड', 'SSB', 'RJ/', 'GKV', 'DELETED', 'विलोपित']):
-                dev_chars = len(re.findall(r'[\u0900-\u097F]', line))
-                if dev_chars >= 3:
-                    cand = clean_hindi_name(line)
-                    if cand and len(cand) >= 2 and cand not in ['है', 'हे']:
-                        name = cand
-                        break
+        if not gender and ('लिंग' in line or 'Sex' in line or 'gender' in line):
+            m_g = re.search(r'(?:लिंग|Sex|gender)\s*[:ः\-]?\s*([^\s\n\r]+)', line, re.IGNORECASE)
+            if m_g:
+                g = m_g.group(1).lower()
+                if any(x in g for x in ['पुरूष', 'पुरुष', 'पु', 'male', 'man', 'परुष']):
+                    gender = "पुरुष"
+                elif any(x in g for x in ['स्त्री', 'महिला', 'eft', 'at', 'aft', 'ett', 'eff', 'fem', 'female']):
+                    gender = "स्त्री"
 
     # Fallbacks from digital text stream when available
     if not house_no and digital_card_text:
@@ -255,13 +258,11 @@ def extract_card_content(img: Image.Image, digital_card_text: str = "") -> Dict[
             gender = "स्त्री"
 
     # Intelligent Gender Inference:
-    # 1. If relation is "पति" (husband), voter is female
-    if relation_type == "पति":
+    is_female = any(fem in name for fem in ['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती', 'अनीता', 'सुनीता', 'मंजू', 'पूजा', 'संगीता', 'गुडडी'])
+    if relation_type == "पति" or is_female:
         gender = "स्त्री"
-    # 2. If name indicates female
-    elif name and any(fem in name for fem in ['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती', 'अनीता', 'सुनीता', 'मंजू', 'पूजा']):
-        if not gender or gender == "पुरुष":
-            gender = "स्त्री"
+    elif not gender:
+        gender = "पुरुष"
     # 3. Default to पुरुष only if not already determined
     if not gender:
         gender = "पुरुष"
@@ -312,29 +313,29 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
 
             # Determine column boundaries based on horizontal position
             if ep_r.x0 < page_width * 0.34:
-                col_x0 = max(0.0, page_width * 0.025)
-                col_x1 = page_width * 0.345
+                col_x0 = 34.4
+                col_x1 = 208.4
             elif ep_r.x0 < page_width * 0.67:
-                col_x0 = page_width * 0.345
-                col_x1 = page_width * 0.67
+                col_x0 = 208.15
+                col_x1 = 381.65
             else:
-                col_x0 = page_width * 0.67
-                col_x1 = min(page_width, page_width * 0.985)
+                col_x0 = 381.65
+                col_x1 = 555.15
 
             # Full card vertical bounds
-            card_y0 = max(0.0, ep_r.y0 - 5.0)
-            card_y1 = min(page_height, ep_r.y0 + 74.0)
-            card_rect = fitz.Rect(col_x0, card_y0, col_x1, card_y1)
+            card_y0 = ep_r.y0
+            card_y1 = min(page_height, ep_r.y0 + 72.0)
+            card_rect = fitz.Rect(col_x0, max(0.0, ep_r.y0 - 5.0), col_x1, card_y1)
 
             # Digital text inside this card's box
             digital_words = page.get_text('words', clip=card_rect)
             digital_card_text = ' '.join(w[4] for w in digital_words)
 
-            # Isolated text area crop (left 73% of card width, below top serial/EPIC row)
-            # This completely excludes the photo box and neighbouring columns!
-            text_x0 = col_x0 + 2.0
-            text_x1 = col_x0 + (col_x1 - col_x0) * 0.725
-            text_y0 = ep_r.y0 + 13.0
+            # Isolated text area crop (left 65% of card width, below top serial header)
+            # This completely excludes the photo box on the right and divider line on top
+            text_x0 = col_x0 + 4.0
+            text_x1 = col_x0 + (col_x1 - col_x0) * 0.65
+            text_y0 = ep_r.y0 + 15.0
             text_y1 = card_y1 - 2.0
             text_rect = fitz.Rect(text_x0, text_y0, text_x1, text_y1)
 
@@ -355,9 +356,9 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
     if len(page_cards) < max(len(page_epics) * 0.5, 1) and p_idx >= 2:
         page_cards = []
         cols = [
-            (int(page_width * 0.025), int(page_width * 0.345)),
-            (int(page_width * 0.345), int(page_width * 0.67)),
-            (int(page_width * 0.67), int(page_width * 0.985))
+            (34.4, 208.4),
+            (208.15, 381.65),
+            (381.65, 555.15)
         ]
         
         # 10 rows standard electoral roll grid
@@ -370,9 +371,9 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                 card_y0 = content_top + (r * row_h)
                 card_y1 = card_y0 + row_h
                 
-                # Card text crop (left 72% of card, below top serial header)
-                text_rect = fitz.Rect(col_x0 + 2.0, card_y0 + 13.0, col_x0 + (col_x1 - col_x0) * 0.725, card_y1 - 2.0)
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=text_rect)
+                # Card text crop (left 65% of card, below top serial header)
+                text_rect = fitz.Rect(col_x0 + 4.0, card_y0 + 15.0, col_x0 + (col_x1 - col_x0) * 0.65, card_y1 - 2.0)
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=text_rect)
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 card_data = extract_card_content(img)
                 

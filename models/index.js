@@ -55,7 +55,7 @@ const voterSchema = new mongoose.Schema({
   wardNo: { type: String, required: true },
   partNo: { type: String, required: true },
   serialNo: { type: Number, required: true },
-  nameEn: { type: String, required: true },
+  nameEn: { type: String, default: '' },
   nameHi: { type: String, required: true },
   age: { type: Number },
   gender: { type: String },
