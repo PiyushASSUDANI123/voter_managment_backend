@@ -249,7 +249,8 @@ const ExcelJS = require('exceljs');
           houseNo: voter.houseNo,
           age: voter.age,
           gender: voter.gender,
-          nameEn: ""
+          nameEn: "",
+          relativeNameEn: ""
         };
 
         if (wardNo) updateFields.wardNo = wardNo;
@@ -260,13 +261,19 @@ const ExcelJS = require('exceljs');
           _id: `voter_${crypto.randomUUID()}`,
           epic: voter.epic,
           serialNo: i + 1,
-          nameEn: "",
           organizationId: organizationId,
         };
 
         if (!wardNo) setOnInsertFields.wardNo = defaultWardNo;
         if (!boothNo) setOnInsertFields.partNo = defaultPartNo;
         if (!uploadedBy) setOnInsertFields.assignedWorker = "";
+
+        // Defensive guard: remove any key from $setOnInsert that is already in $set
+        for (const key of Object.keys(setOnInsertFields)) {
+          if (key in updateFields) {
+            delete setOnInsertFields[key];
+          }
+        }
 
         return {
           updateOne: {

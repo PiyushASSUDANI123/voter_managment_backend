@@ -588,7 +588,9 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       voter.assignedWorker = defaultUploadedBy;
     }
     if (!voter.epic || !voter.wardNo || !voter.partNo || !Number.isInteger(voter.serialNo)
-      || voter.serialNo < 1 || !voter.nameEn || !voter.nameHi) return null;
+      || voter.serialNo < 1 || (!voter.nameEn && !voter.nameHi)) return null;
+    if (!voter.nameHi) voter.nameHi = voter.nameEn;
+    if (!voter.nameEn) voter.nameEn = voter.nameHi;
     return voter;
   };
 
@@ -619,17 +621,20 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     }
 
     const uniqueBatch = [...new Map(batch.map((voter) => [voter.epic, voter])).values()];
-    const result = await Voter.bulkWrite(uniqueBatch.map((voter) => ({
-      updateOne: {
-        filter: { organizationId, epic: voter.epic },
-        collation: { locale: 'en', strength: 2 },
-        update: {
-          $set: voter,
-          $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
+    const result = await Voter.bulkWrite(uniqueBatch.map((voter) => {
+      const { _id, ...updateData } = voter;
+      return {
+        updateOne: {
+          filter: { organizationId, epic: voter.epic },
+          collation: { locale: 'en', strength: 2 },
+          update: {
+            $set: updateData,
+            $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
+          },
+          upsert: true,
         },
-        upsert: true,
-      },
-    })), { ordered: false });
+      };
+    }), { ordered: false });
     const inserted = result.upsertedCount || 0;
     const updated = result.matchedCount || 0;
 
