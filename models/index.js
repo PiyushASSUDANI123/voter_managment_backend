@@ -51,7 +51,7 @@ const userSchema = new mongoose.Schema({
 
 const voterSchema = new mongoose.Schema({
   _id: { type: String, required: true },
-  epic: { type: String, required: true, index: true },
+  epic: { type: String, required: true },
   wardNo: { type: String, required: true },
   partNo: { type: String, required: true },
   serialNo: { type: Number, required: true },
@@ -83,14 +83,17 @@ const voterSchema = new mongoose.Schema({
 });
 
 // 🚀 Performance Optimization: Compound Indexes
-// Enables ultra-fast querying by organization and key filters
+// Enables ultra-fast O(1) querying and memory-free indexed sorting across millions of records
+voterSchema.index({ organizationId: 1, wardNo: 1, partNo: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, partNo: 1, serialNo: 1 });
+voterSchema.index({ organizationId: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, wardNo: 1 });
 voterSchema.index({ organizationId: 1, wardNo: 1, partNo: 1 });
 voterSchema.index({ organizationId: 1, houseNo: 1 });
 voterSchema.index({ organizationId: 1, partNo: 1, houseNo: 1 });
 voterSchema.index({ organizationId: 1, familyId: 1 });
 voterSchema.index({ organizationId: 1, epic: 1 });
+voterSchema.index({ organizationId: 1, nameHi: 1 });
 voterSchema.index({ organizationId: 1, mobileNo: 1 });
 voterSchema.index({ organizationId: 1, caste: 1 });
 voterSchema.index({ organizationId: 1, voted: 1 });

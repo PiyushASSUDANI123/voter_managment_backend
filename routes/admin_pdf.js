@@ -186,6 +186,18 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
             excelFilename: msg.excelFilename,
             hasExcel: Boolean(msg.excelPath)
           });
+
+          // Invalidate cache for the organization so newly uploaded voters reflect immediately
+          try {
+            const cache = require('../lib/cache');
+            if (cache) {
+              const keys = cache.keys ? cache.keys() : [];
+              keys.forEach(k => {
+                if (k.includes(organizationId)) cache.del(k);
+              });
+            }
+          } catch {}
+
           console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters. Excel generated: ${msg.excelFilename}`);
         } catch (dbError) {
           uploadJobs.set(jobId, { 
