@@ -424,7 +424,10 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
     // 1. If we have uploaded image or have a public image URL, try sending template with image header or image message
     if (mediaId || publicImageUrl) {
       const imageParam = mediaId ? { id: mediaId } : { link: publicImageUrl };
-      if (templateName) {
+      const imageTemplateName = (templateName === 'voter_slip_card_hi' || !templateName || templateName === 'voter_slip_dispatch')
+        ? 'voter_slip_card_hi'
+        : templateName;
+      if (imageTemplateName) {
         try {
           const templatePayload = {
             messaging_product: 'whatsapp',
@@ -432,7 +435,7 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
             to: recipientPhone,
             type: 'template',
             template: {
-              name: templateName,
+              name: imageTemplateName,
               language: { code: 'hi' },
               components: [
                 {
@@ -443,7 +446,7 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
                 },
                 {
                   type: 'body',
-                  parameters: templateName === 'voter_slip_card_hi'
+                  parameters: imageTemplateName === 'voter_slip_card_hi'
                     ? [
                         { type: 'text', text: voterName },
                         { type: 'text', text: voterName },
@@ -471,7 +474,7 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
             { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
           );
         } catch (tmplErr) {
-          console.warn('Template with image header not supported by template, falling back to body template or image message:', tmplErr.response?.data?.error?.message || tmplErr.message);
+          console.warn('Template with image header failed, falling back:', tmplErr.response?.data?.error?.message || tmplErr.message);
           lastError = tmplErr;
         }
       }
@@ -579,7 +582,9 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
     const errorCode = err.response?.data?.error?.code;
 
     // Helpful error messages for common Meta codes
-    if (errorCode === 131047) {
+    if (errorCode === 131030) {
+      errorDetail = `Meta टेस्ट मोड प्रतिबंध (#131030): नंबर (+91 ${recipientPhone.slice(-10)}) Meta Developer Console की Allowed Numbers लिस्ट में नहीं है। कृपया Meta Developers Console में जाकर यह नंबर जोड़ें या फिर "डायरेक्ट WhatsApp भेजें" (1-Click) का उपयोग करें।`;
+    } else if (errorCode === 131047) {
       errorDetail = 'Meta 24-घंटे नीति: मतदाता ने पहले मैसेज नहीं किया है। इस नंबर पर संदेश भेजने के लिए Meta Approved Template आवश्यक है।';
     } else if (errorCode === 131026) {
       errorDetail = 'मोबाइल नंबर Meta WhatsApp पर मौजूद नहीं है या अमान्य है।';
