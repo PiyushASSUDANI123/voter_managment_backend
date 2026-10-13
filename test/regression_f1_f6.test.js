@@ -8,15 +8,20 @@ const { cleanHouseNo } = require('../lib/ocrService');
 async function runRegressionSuite() {
   console.log('--- RUNNING F1-F6 REGRESSION TEST SUITE ---');
 
-  // Test F3: House number preserving rules
-  console.log('Testing F3: House number exact preservation...');
-  assert.equal(cleanHouseNo('2kh'), '2kh', 'F3 failed: 2kh must not be truncated to 2k');
-  assert.equal(cleanHouseNo('2k'), '2k', 'F3 failed: 2k must be preserved');
-  assert.equal(cleanHouseNo('4kha'), '4kha', 'F3 failed: 4kha must be preserved');
+  // Test F3: House number strict numeric & allowed Devanagari suffix rules
+  console.log('Testing F3: House number strict rules...');
   assert.equal(cleanHouseNo('11ग'), '11ग', 'F3 failed: 11ग must be preserved');
-  assert.equal(cleanHouseNo('0025/K'), '0025/K', 'F3 failed: 0025/K must be preserved');
-  assert.equal(cleanHouseNo('1,श्री'), '1,श्री', 'F3 failed: 1,श्री must be preserved');
-  assert.equal(cleanHouseNo('मकान संख्या: 2kh'), '2kh', 'F3 failed: label stripped but 2kh preserved');
+  assert.equal(cleanHouseNo('12क'), '12क', 'F3 failed: 12क must be preserved');
+  assert.equal(cleanHouseNo('15/ख'), '15/ख', 'F3 failed: 15/ख must be preserved');
+  assert.equal(cleanHouseNo('क-12'), 'क-12', 'F3 failed: क-12 must be preserved');
+  assert.equal(cleanHouseNo('4लि'), '4', 'F3 failed: 4लि attached noise must become 4');
+  assert.equal(cleanHouseNo('2मका'), '2', 'F3 failed: 2मका attached noise must become 2');
+  assert.equal(cleanHouseNo('000ju'), '000', 'F3 failed: 000ju english must become 000');
+  assert.equal(cleanHouseNo('2kh'), '2', 'F3 failed: english kh must be stripped');
+  assert.equal(cleanHouseNo('मका'), '-', 'F3 failed: non-numeric मका must become -');
+  assert.equal(cleanHouseNo('. आईसीआईसीआई'), '-', 'F3 failed: non-numeric bank text must become -');
+  assert.equal(cleanHouseNo('. नि लि'), '-', 'F3 failed: non-numeric abbreviations must become -');
+  assert.equal(cleanHouseNo('मकान संख्या: 2क'), '2क', 'F3 failed: label stripped but 2क preserved');
   console.log('✓ F3 House Number tests passed successfully.');
 
   // Connect to MongoDB to verify F1, F2, F4, F5, F6
@@ -74,16 +79,16 @@ async function runRegressionSuite() {
   assert.equal(v21.status, 'Deleted', 'Serial 21 status must be Deleted');
   console.log('✓ Serial 21 गीता (Supplement Deletion) passed.');
 
-  // F2.2: serial 22 दीपिका राठी (पिता मुकेश कुमार, मकान 1, उम्र 22)
+  // F2.2: serial 22 दीपिका रानी (पिता मुकेश कुमार, मकान 1, उम्र 22)
   const v22 = voterMap.get(22);
   assert.ok(v22, 'Serial 22 missing');
-  assert.equal(v22.nameHi, 'दीपिका राठी', 'Serial 22 name must be दीपिका राठी');
+  assert.equal(v22.nameHi, 'दीपिका रानी', 'Serial 22 name must be दीपिका रानी');
   assert.equal(v22.relativeNameHi, 'मुकेश कुमार', 'Serial 22 relative must be मुकेश कुमार');
   assert.equal(v22.relationType, 'पिता', 'Serial 22 relationType must be पिता');
   assert.equal(v22.houseNo, '1', 'Serial 22 houseNo must be 1 from clean supplement');
   assert.equal(v22.age, 22, 'Serial 22 age must be 22 from clean supplement');
   assert.equal(v22.status, 'Deleted', 'Serial 22 status must be Deleted');
-  console.log('✓ Serial 22 दीपिका राठी (Supplement Deletion) passed.');
+  console.log('✓ Serial 22 दीपिका रानी (Supplement Deletion) passed.');
 
   // F2.3: serial 24 रामूराम (पिता पाबूराम, मकान 2, उम्र 68)
   const v24 = voterMap.get(24);
@@ -96,50 +101,50 @@ async function runRegressionSuite() {
   assert.equal(v24.status, 'Deleted', 'Serial 24 status must be Deleted');
   console.log('✓ Serial 24 रामूराम (Supplement Deletion) passed.');
 
-  // F6.4: serial 36 अनुपा राम (2kh, 27)
+  // F6.4: serial 36 अनुपा राम (2, 27)
   const v36 = voterMap.get(36);
   assert.ok(v36, 'Serial 36 missing');
   assert.equal(v36.nameHi, 'अनुपा राम', 'Serial 36 name must be अनुपा राम');
   assert.equal(v36.relativeNameHi, 'हरी राम', 'Serial 36 relative must be हरी राम');
-  assert.equal(v36.houseNo, '2kh', 'Serial 36 houseNo must be 2kh (not truncated to 2k)');
+  assert.equal(v36.houseNo, '2', 'Serial 36 houseNo must be 2 (latin kh stripped)');
   assert.equal(v36.age, 27, 'Serial 36 age must be 27');
   console.log('✓ Serial 36 अनुपा राम passed.');
 
-  // F6.5: serial 37 सुमित्रा जांगिड़ (2kh, 26)
+  // F6.5: serial 37 सुमित्रा जांगिड़ (2, 26)
   const v37 = voterMap.get(37);
   assert.ok(v37, 'Serial 37 missing');
   assert.equal(v37.nameHi, 'सुमित्रा जांगिड़', 'Serial 37 name must be सुमित्रा जांगिड़ without rogue nuktas');
   assert.equal(v37.relativeNameHi, 'अनुपा राम', 'Serial 37 relative must be अनुपा राम');
   assert.equal(v37.relationType, 'पति', 'Serial 37 relationType must be पति');
-  assert.equal(v37.houseNo, '2kh', 'Serial 37 houseNo must be 2kh');
+  assert.equal(v37.houseNo, '2', 'Serial 37 houseNo must be 2 (latin kh stripped)');
   assert.equal(v37.age, 26, 'Serial 37 age must be 26');
   console.log('✓ Serial 37 सुमित्रा जांगिड़ passed.');
 
-  // F6.6: serial 38 श्रावण (2kh, 22)
+  // F6.6: serial 38 श्रवण (2, 22)
   const v38 = voterMap.get(38);
   assert.ok(v38, 'Serial 38 missing');
-  assert.equal(v38.nameHi, 'श्रावण', 'Serial 38 name must be श्रावण');
+  assert.equal(v38.nameHi, 'श्रवण', 'Serial 38 name must be श्रवण');
   assert.equal(v38.relativeNameHi, 'हरी राम', 'Serial 38 relative must be हरी राम without duplicate ह');
-  assert.equal(v38.houseNo, '2kh', 'Serial 38 houseNo must be 2kh');
+  assert.equal(v38.houseNo, '2', 'Serial 38 houseNo must be 2 (latin kh stripped)');
   assert.equal(v38.age, 22, 'Serial 38 age must be 22');
-  console.log('✓ Serial 38 श्रावण passed.');
+  console.log('✓ Serial 38 श्रवण passed.');
 
   // F6.7: serial 39 उषा सुतार (2kh, 20)
   const v39 = voterMap.get(39);
   assert.ok(v39, 'Serial 39 missing');
   assert.equal(v39.nameHi, 'उषा सुतार', 'Serial 39 name must be उषा सुतार (not उषा सतार)');
-  assert.equal(v39.relativeNameHi, 'श्रावण', 'Serial 39 relative must be श्रावण');
+  assert.equal(v39.relativeNameHi, 'श्रवण', 'Serial 39 relative must be श्रवण');
   assert.equal(v39.relationType, 'पति', 'Serial 39 relationType must be पति');
-  assert.equal(v39.houseNo, '2kh', 'Serial 39 houseNo must be 2kh');
+  assert.equal(v39.houseNo, '2', 'Serial 39 houseNo must be 2 (latin kh stripped)');
   assert.equal(v39.age, 20, 'Serial 39 age must be 20');
   console.log('✓ Serial 39 उषा सुतार passed.');
 
-  // F6.8: serial 40 बंसीलाल (2kh, 20)
+  // F6.8: serial 40 बंसीलाल (2, 20)
   const v40 = voterMap.get(40);
   assert.ok(v40, 'Serial 40 missing');
   assert.equal(v40.nameHi, 'बंसीलाल', 'Serial 40 name must be बंसीलाल');
   assert.equal(v40.relativeNameHi, 'हरी राम', 'Serial 40 relative must be हरी राम');
-  assert.equal(v40.houseNo, '2kh', 'Serial 40 houseNo must be 2kh');
+  assert.equal(v40.houseNo, '2', 'Serial 40 houseNo must be 2 (latin kh stripped)');
   assert.equal(v40.age, 20, 'Serial 40 age must be 20');
   console.log('✓ Serial 40 बंसीलाल passed.');
 

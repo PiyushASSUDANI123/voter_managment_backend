@@ -82,7 +82,7 @@ async function sync() {
   console.log(`Deleted ${deletedRes.deletedCount} old garbled voters from ${orgId}.`);
 
   const voterDocs = Array.from(votersBySerial.values());
-  const inserted = await Voter.insertMany(voterDocs);
+  const inserted = await Voter.insertMany(voterDocs, { ordered: false });
   console.log(`Successfully inserted ${inserted.length} clean, 100% accurate voters into ${orgId}!`);
 
   const activeCount = await Voter.countDocuments({ organizationId: orgId, status: 'Active' });

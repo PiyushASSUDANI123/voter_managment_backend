@@ -4,6 +4,7 @@ const pdfParse = require('pdf-parse');
 const crypto = require('crypto');
 const { performLocalOCR, cleanHindiText, cleanHouseNo } = require('../lib/ocrService');
 const { isKrutiDevText, convertKrutiDevToUnicode, autoConvertText, isPUAText } = require('../lib/krutiDevConverter');
+const { needsAiRepair, repairVoterCardJs } = require('../lib/openrouterFallback');
 
 async function processPdf() {
   const { filePath, useOcr, organizationId, wardNo, boothNo, uploadedBy } = workerData;
@@ -234,6 +235,16 @@ const ExcelJS = require('exceljs');
     }
 
     updateProgress(55);
+
+    // Pillar 8: OpenRouter AI Fallback ONLY for cards with missing father or voter name
+    for (let i = 0; i < finalVoterList.length; i++) {
+      if (needsAiRepair(finalVoterList[i])) {
+        try {
+          const cardHint = `नाम: ${finalVoterList[i].nameHi || ''}, मकान: ${finalVoterList[i].houseNo || ''}, आयु: ${finalVoterList[i].age || ''}, लिंग: ${finalVoterList[i].gender || ''}`;
+          await repairVoterCardJs(cardHint, finalVoterList[i]);
+        } catch {}
+      }
+    }
 
     // Build MongoDB bulkWrite operations with strict quality filters
     const operations = finalVoterList

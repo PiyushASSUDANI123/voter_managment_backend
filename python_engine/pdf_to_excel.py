@@ -45,6 +45,16 @@ except ImportError:
         def krutidev_to_unicode(text): return text
         def fix_pua_to_devanagari(text): return text
 
+# Pillar 8: OpenRouter AI Fallback Engine (Zero-Cost / Selective Repair)
+try:
+    from openrouter_fallback import repair_single_voter_card, needs_ai_repair
+except ImportError:
+    try:
+        from python_engine.openrouter_fallback import repair_single_voter_card, needs_ai_repair
+    except ImportError:
+        def repair_single_voter_card(text, record): return record
+        def needs_ai_repair(record): return False
+
 try:
     import fitz  # PyMuPDF
 except ImportError:
@@ -433,6 +443,9 @@ def clean_hindi_name(raw: str) -> str:
     for _ in range(2):
         n = re.sub(r'\s+(?:का\s*नरक|नरक|कफ|कस|कर|डा|ए|झारे|औडे|हा|फ्रे|दल|डी|ईडी|लेटे|डिलीट|शा|हि|हू|हु|का|के|की|ज|ब|त|क|घ|छ|झ|ण|प|फ|य|र|ल|व|श|ष|स|ह)$', '', n).strip()
     
+    # Strip leading stray stamp marks (e.g. 'नी जवरी' -> 'जवरी', 'वि रमेश' -> 'रमेश')
+    n = re.sub(r'^(?:नी|वि|सं|डी|ए|ई|नं|म)\s+', '', n).strip()
+
     # Fix broken leading matras (e.g. 'ुर्गाराम' -> 'दुर्गाराम')
     n = re.sub(r'^[\u0941\u0942]र्गा', 'दुर्गा', n)
     # Deduplicate repeated nuktas and normalize
@@ -448,7 +461,12 @@ def clean_hindi_name(raw: str) -> str:
     n = re.sub(r'[\u093C]+', '\u093C', n)
     n = re.sub(r'जांगिड़\u093C+', 'जांगिड़', n)
     
-    banned = {'मतदाता', 'कलेण्डर', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'अनुभाग', 'प्रारूप', 'मतदान', 'हस्ताक्षर', 'फोटो', 'उपलब्ध', 'संख्या', 'भाग', 'सूची', 'ग्राम', 'नगर', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पिता', 'पति', 'माता', 'अन्य', 'नातेदार', 'नाम'}
+    banned = {
+        'मतदाता', 'कलेण्डर', 'विधानसभा', 'निर्वाचक', 'नामावली', 'वार्ड', 'अनुभाग',
+        'प्रारूप', 'मतदान', 'हस्ताक्षर', 'फोटो', 'उपलब्ध', 'संख्या', 'भाग', 'सूची',
+        'ग्राम', 'नगर', 'मकान', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पिता', 'पति', 'माता',
+        'अन्य', 'नातेदार', 'नाम', 'ग्रामपंचायत', 'पंचायत', 'जिलापरिषद', 'ओसियाँ', 'प्रतापनगर'
+    }
     if n in banned or len(n) < 2:
         return ""
     return n
@@ -488,26 +506,42 @@ def clean_relative_info(raw: str) -> Tuple[str, str]:
 
 def clean_house_no(raw: str) -> str:
     """
-    House number extraction and normalization preserving exact representation (F3).
-    Supports formats like '2kh', '2k', '4kha', '11ग', '0025/K', '1,श्री', '11ड', '5क', '01', '1'.
-    Never truncates Latin suffix ('2kh' -> '2kh') or strips valid Devanagari characters.
+    Strict House Number extraction and normalization.
+    Rule 1: Only numerical values (0-9, ०-९) with optional separators ('/', '-').
+    Rule 2: English characters are strictly stripped ('engklish ka toh kuch aa hi nhi skta').
+    Rule 3: Only fixed Devanagari sub-division suffixes allowed: क, ख, ग, घ, ङ, च, छ ('12क', '15/ख', 'क-12').
+    Rule 4: Junk words ('मका', 'लि', 'नि लि', '. आईसीआईसीआई', etc.) are stripped or return '-' if no digits exist.
     """
     if not raw:
         return "-"
-    cleaned = normalize_numerals(raw.strip())
-    if any(w in cleaned.lower() for w in ['लागू नहीं', 'उपलब्ध नहीं', 'शून्य', 'nil', 'na', 'none']):
+    s = normalize_numerals(str(raw).strip())
+    if any(w in s.lower() for w in ['लागू नहीं', 'उपलब्ध नहीं', 'शून्य', 'nil', 'na', 'none', 'n/a']):
         return "-"
-    cleaned = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY)[:ः\.\-\s]*', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|ward|house|no)+', '', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'[%*~_!?:;\'"‘’।॥«»°+={}\[\]()|<>^$&#@¥]+', '', cleaned).strip()
+
+    # Strip prefixes and labels
+    s = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY)[:ः\.\-\s]*', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|ward|house|no)+', '', s, flags=re.IGNORECASE)
     
-    m = re.search(r'(\d+[\/\-]?\d*(?:\s*[\,]\s*)?(?:\s*[A-Za-z\u0900-\u097F]+)?)', cleaned)
-    if m:
-        res = m.group(1).strip()
-        res = re.sub(r'(\d+)\s+([A-Za-z\u0900-\u097F]+)', r'\1\2', res)
-        res = re.sub(r'\s*,\s*', ',', res)
-        return res
-    return cleaned if cleaned else '-'
+    # Strictly strip all English letters
+    s = re.sub(r'[A-Za-z]+', '', s)
+    
+    # Strip punctuation except / and -
+    s = re.sub(r'[%*~_!?:;\'"‘’।॥«»°+={}\[\]()|<>^$&#@¥\.]+', ' ', s).strip()
+
+    # Prefix allowed pattern: e.g. "क-12" or "ख/4"
+    m_pre = re.search(r'([क-छ])\s*[\/\-]?\s*(\d+(?:[\/\-]\d+)*)', s)
+    if m_pre:
+        return f"{m_pre.group(1)}-{m_pre.group(2)}"
+
+    # Core pattern: Digits with optional '/' or '-' and optional allowed Devanagari suffix [क-छ]
+    m_num = re.search(r'(\d+(?:[\/\-]\d+)*)(?:\s*([\/\-]?\s*[क-छ]))?', s)
+    if m_num:
+        digits_part = m_num.group(1)
+        suffix = (m_num.group(2) or '').replace(' ', '')
+        return f"{digits_part}{suffix}"
+
+    # If no valid digits are found (e.g. '. आईसीआईसीआई', 'मका', 'नि लि'), leave empty ('-')
+    return "-"
 
 
 def ensemble_ocr_line(preprocessed_img: np.ndarray) -> str:
@@ -739,18 +773,27 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             # Pillar 6: Cross-Field Logic Validation
             gender, rel_type, age = cross_field_logic_validation(name, rel_type, gender_raw, age_raw)
 
-            if name and name != "मतदाता" and len(name) >= 2:
-                page_cards.append({
-                    "serialNo": card_serial,
-                    "epic": extracted_epic,
-                    "nameHi": name,
-                    "relativeNameHi": rel_name,
-                    "relationType": rel_type,
-                    "houseNo": house_no,
-                    "age": age,
-                    "gender": gender,
-                    "status": status
-                })
+            card_record = {
+                "serialNo": card_serial,
+                "epic": extracted_epic,
+                "nameHi": name,
+                "relativeNameHi": rel_name,
+                "relationType": rel_type,
+                "houseNo": house_no,
+                "age": age,
+                "gender": gender,
+                "status": status
+            }
+
+            # PILLAR 8: OpenRouter AI Fallback ONLY IF DATA IS MISSING OR CORRUPTED
+            if needs_ai_repair(card_record):
+                try:
+                    card_record = repair_single_voter_card(card_text_str, card_record)
+                except Exception:
+                    pass
+
+            if card_record["nameHi"] and card_record["nameHi"] != "मतदाता" and len(card_record["nameHi"]) >= 2:
+                page_cards.append(card_record)
 
     # Scanned Page Grid Fallback
     is_non_voter_page = bool(re.search(r'संक्षिप्त विवरण|निर्वाचकों की संख्या|मतदाताओं की संख्या|वार्ड का नक्शा|सारणी', page_text))
