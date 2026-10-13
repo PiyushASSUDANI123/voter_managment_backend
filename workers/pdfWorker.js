@@ -159,8 +159,8 @@ const ExcelJS = require('exceljs');
         text = autoConvertText(text);
       }
 
-      // Universal Age/Gender block splitter
-      const blocks = text.split(/(आयु[:ः\s]*\d+[\s.,]*(?:लिंग[:ः\s]*\S+|Sex[:\s]*\S+))/i);
+      // Universal Age/Gender block splitter (including SEC variants)
+      const blocks = text.split(/((?:(?:आयु|आयू|आय|आजच)[:ः\s]*\d+[\s.,]*(?:लिंग|सलग|Sex)[:ः\s]*\S+|(?:लिंग|सलग|Sex)[:ः\s]*\S+))/i);
       
       for (let i = 0; i < blocks.length - 1; i += 2) {
         const fullBlock = blocks[i] + " " + blocks[i + 1];
@@ -174,16 +174,17 @@ const ExcelJS = require('exceljs');
         let genderVal = "अन्य";
 
         for (const line of lines) {
-          if (/^(?:मतदाता का नाम|नाम)\s*[:ः\-]\s*(.+)/i.test(line) && !/क्षेत्र|संख्या एवं|विधानसभा/i.test(line)) {
-            const m = line.match(/^(?:मतदाता का नाम|नाम)\s*[:ः\-]\s*(.+)/i);
+          if (/(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नरम)\s*[:ः\-]\s*(.+)/i.test(line) && !/क्षेत्र|संख्या एवं|विधानसभा/i.test(line)) {
+            const m = line.match(/(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नरम)\s*[:ः\-]\s*(.+)/i);
             if (m && !nameHi) {
               nameHi = m[1].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
             }
           }
-          if (/^(?:(पिता|पति|माता|अन्य)\s*का\s*नाम)\s*[:ः\-]\s*(.+)/i.test(line)) {
-            const m = line.match(/^(?:(पिता|पति|माता|अन्य)\s*का\s*नाम)\s*[:ः\-]\s*(.+)/i);
+          if (/(?:(पिता|पति|माता|अन्य|नपतर|पनत|मरतर)\s*(?:का|कर)?\s*(?:नाम|नरम|नरक))\s*[:ः\-]\s*(.+)/i.test(line)) {
+            const m = line.match(/(?:(पिता|पति|माता|अन्य|नपतर|पनत|मरतर)\s*(?:का|कर)?\s*(?:नाम|नरम|नरक))\s*[:ः\-]\s*(.+)/i);
             if (m && !relativeNameHi) {
-              relationType = m[1];
+              const r = m[1];
+              relationType = r === 'नपतर' ? 'पिता' : r === 'पनत' ? 'पति' : r === 'मरतर' ? 'माता' : r;
               relativeNameHi = m[2].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
             }
           }
@@ -238,7 +239,7 @@ const ExcelJS = require('exceljs');
     updateProgress(55);
 
     // Pillar 8: Groq / OpenRouter AI Fallback ONLY if cards need repair
-    const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 15);
+    const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 60);
     if (needyCards.length > 0) {
       await Promise.allSettled(needyCards.map(async (v) => {
         try {
