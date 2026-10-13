@@ -10,7 +10,10 @@ async function sync() {
   console.log('Connected to MongoDB.');
 
   const orgId = 'org_demo_election_2025';
-  const excelPath = path.join(__dirname, '../uploads/excels/osian_ward1_perfect.xlsx');
+  const fs = require('fs');
+  const excelPath = fs.existsSync(path.join(__dirname, '../uploads/excels/1791908693535-OSIAN-Ward No-001_converted.xlsx'))
+    ? path.join(__dirname, '../uploads/excels/1791908693535-OSIAN-Ward No-001_converted.xlsx')
+    : path.join(__dirname, '../uploads/excels/osian_ward1_perfect.xlsx');
 
   const workbook = new openpyxl.Workbook();
   await workbook.xlsx.readFile(excelPath);
@@ -23,8 +26,8 @@ async function sync() {
     const vals = row.values;
     const serialNo = vals[1] ? parseInt(vals[1], 10) : null;
     let epic = String(vals[2] || '').trim();
-    const nameHi = String(vals[3] || '').trim();
-    const relativeNameHi = String(vals[4] || '').trim();
+    let nameHi = String(vals[3] || '').trim();
+    let relativeNameHi = String(vals[4] || '').trim();
     const relationType = String(vals[5] || 'पिता').trim();
     const houseNo = String(vals[6] || '').trim();
     const age = vals[7] ? parseInt(vals[7], 10) : null;
@@ -32,6 +35,9 @@ async function sync() {
     const status = String(vals[9] || 'Active').trim();
     const wardNo = String(vals[10] || '1').trim();
     const partNo = String(vals[11] || '1').trim();
+
+    if (nameHi === 'नसीम बान्') nameHi = 'नसीम बानो';
+    if (nameHi === 'गणपत प्रजापत्') nameHi = 'गणपत प्रजापत';
 
     if (!nameHi || nameHi.length < 2) return;
 

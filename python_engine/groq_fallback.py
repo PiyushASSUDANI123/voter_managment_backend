@@ -67,7 +67,7 @@ def _call_groq_api(prompt: str, timeout: int = 8) -> Optional[str]:
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json",
-            "User-Agent": "VijaySetu/2.0"
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko)"
         }
 
         payload = {
