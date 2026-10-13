@@ -540,24 +540,37 @@ ${publicImageUrl ? `🖼️ डिजिटल पर्ची फोटो: ${p
             ]
           }
         };
-      } else {
+      }
+      if (templateName) {
+        try {
+          response = await axios.post(
+            `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+            messagePayload,
+            { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
+          );
+        } catch (tmplErr) {
+          console.warn('Template send failed, falling back to direct text message:', tmplErr.response?.data?.error?.message || tmplErr.message);
+          lastError = tmplErr;
+        }
+      }
+
+      if (!response) {
         const fullText = publicImageUrl
           ? `${messageText}\n\n🖼️ *डिजिटल पर्ची फोटो:*\n${publicImageUrl}`
           : messageText;
-        messagePayload = {
+        const textPayload = {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
           to: recipientPhone,
           type: 'text',
           text: { preview_url: true, body: fullText }
         };
+        response = await axios.post(
+          `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
+          textPayload,
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
+        );
       }
-
-      response = await axios.post(
-        `https://graph.facebook.com/${graphApiVersion}/${phoneNumberId}/messages`,
-        messagePayload,
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 12000 }
-      );
     }
 
     metaAccepted = true;
