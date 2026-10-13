@@ -50,8 +50,9 @@ const ExcelJS = require('exceljs');
 
     // 1. High-Performance Native Python Engine (if available)
     const pythonOk = await isPythonAvailable();
+    console.log(`[pdfWorker] Python availability check: ${pythonOk}`);
     if (pythonOk) {
-      console.log(`Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
+      console.log(`[pdfWorker] Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
       updateProgress(20);
       const path = require('path');
       const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
@@ -60,7 +61,8 @@ const ExcelJS = require('exceljs');
       const targetExcelPath = path.join(excelDir, excelFilename);
 
       try {
-        await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
+        const pyResult = await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
+        console.log(`[pdfWorker] Python engine finished successfully:`, pyResult);
         updateProgress(50);
         
         const workbook = new ExcelJS.Workbook();
@@ -111,7 +113,7 @@ const ExcelJS = require('exceljs');
         });
         console.log(`Python engine extracted ${finalVoterList.length} authentic voters with high precision.`);
       } catch (pyErr) {
-        console.warn("Python extraction failed, falling back to local JS OCR:", pyErr.message);
+        console.error("[pdfWorker] Python extraction FAILED:", pyErr.message, pyErr.stack);
         finalVoterList = [];
       }
     }
