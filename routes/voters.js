@@ -115,17 +115,21 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(caste.trim(), 'i');
     if (typeof assignedWorker === 'string' && assignedWorker.trim()) query.assignedWorker = new RegExp(assignedWorker.trim(), 'i');
 
+    const isAll = req.query.all === 'true' || req.query.all === '1';
     const page = boundedInteger(req.query.page, 1, 100000);
-    const pageSize = boundedInteger(req.query.pageSize, 100, 250);
+    const pageSize = boundedInteger(req.query.pageSize, 100, 10000);
     
     // Execute count and paginated query in parallel for 2x faster responses
+    const voterQuery = Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    if (!isAll) {
+      voterQuery.skip((page - 1) * pageSize).limit(pageSize);
+    } else {
+      voterQuery.limit(10000);
+    }
+
     const [count, voters] = await Promise.all([
       Voter.countDocuments(query),
-      Voter.find(query)
-        .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
-        .skip((page - 1) * pageSize)
-        .limit(pageSize)
-        .lean()
+      voterQuery,
     ]);
 
     const formattedVoters = voters.map((v) => ({
@@ -134,8 +138,8 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
       mobileNo: v.mobileNo || v.phone || '',
     }));
       
-    res.json(req.query.page || req.query.pageSize
-      ? { data: formattedVoters, page, pageSize, total: count }
+    res.json(req.query.page || req.query.pageSize || isAll
+      ? { data: formattedVoters, page: isAll ? 1 : page, pageSize: isAll ? count : pageSize, total: count }
       : formattedVoters);
   } catch (err) {
     console.error('Voter search failed:', err.message);
