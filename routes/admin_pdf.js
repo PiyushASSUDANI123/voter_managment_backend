@@ -136,7 +136,8 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
       uploadedBy: uploadedBy,
       listDescription: listDescription,
       status: 'processing',
-      progress: 0,
+      progress: 5,
+      stageMessage: '📄 PDF फ़ाइल प्राप्त हुई, प्रक्रिया शुरू...',
       extractedCount: 0,
       uploadedAt: new Date().toISOString()
     });
@@ -159,7 +160,11 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
 
     worker.on('message', async (msg) => {
       if (msg.type === 'progress') {
-        uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: msg.data });
+        uploadJobs.set(jobId, { 
+          ...uploadJobs.get(jobId), 
+          progress: typeof msg.data === 'number' ? msg.data : (msg.progress || 0),
+          stageMessage: msg.stage || uploadJobs.get(jobId)?.stageMessage || 'प्रोसेसिंग चालू है...'
+        });
       } else if (msg.type === 'done') {
         const operations = msg.data;
         const epicsCount = msg.epicsCount;
@@ -172,8 +177,12 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
               const chunk = operations.slice(i, i + CHUNK_SIZE);
               await Voter.bulkWrite(chunk, { ordered: false });
               processed += chunk.length;
-              const dbProgress = Math.floor((processed / operations.length) * 40);
-              uploadJobs.set(jobId, { ...uploadJobs.get(jobId), progress: 60 + dbProgress });
+              const dbProgress = Math.floor((processed / operations.length) * 11);
+              uploadJobs.set(jobId, { 
+                ...uploadJobs.get(jobId), 
+                progress: 88 + dbProgress,
+                stageMessage: `💾 सत्यापित डेटा डेटाबेस में सुरक्षित हो रहा है (${processed}/${operations.length})...`
+              });
             }
           }
           
@@ -181,6 +190,7 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
             ...uploadJobs.get(jobId),
             status: 'completed',
             progress: 100,
+            stageMessage: '✅ सत्यापन पूर्ण! सभी मतदाता रिकॉर्ड्स सुरक्षित हो गए हैं।',
             extractedCount: epicsCount,
             excelPath: msg.excelPath,
             excelFilename: msg.excelFilename,

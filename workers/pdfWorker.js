@@ -5,24 +5,24 @@ const crypto = require('crypto');
 const { performLocalOCR, cleanHindiText, cleanHouseNo } = require('../lib/ocrService');
 const { isKrutiDevText, convertKrutiDevToUnicode, autoConvertText, isPUAText } = require('../lib/krutiDevConverter');
 const { needsAiRepair, repairVoterCardJs } = require('../lib/openrouterFallback');
-const { repairVoterCardGroq } = require('../lib/groqFallback');
+const { repairVoterCardGroq, reverifyVotersListGroq } = require('../lib/groqFallback');
 
 async function processPdf() {
   const { filePath, useOcr, organizationId, wardNo, boothNo, uploadedBy } = workerData;
   let text = "";
 
-  const updateProgress = (prog) => {
+  const updateProgress = (prog, stageMsg = 'प्रोसेसिंग जारी है...') => {
     if (parentPort) {
-      parentPort.postMessage({ type: 'progress', data: prog });
+      parentPort.postMessage({ type: 'progress', data: prog, stage: stageMsg });
     }
   };
 
   try {
-    updateProgress(5);
+    updateProgress(5, '📄 PDF फ़ाइल लोड और सत्यापन प्रारंभ...');
     const dataBuffer = fs.readFileSync(filePath);
     const pdfData = await pdfParse(dataBuffer);
     text = pdfData.text || "";
-    updateProgress(15);
+    updateProgress(15, '🔍 हेडर और फॉन्ट संरचना का विश्लेषण...');
 
 const { runPythonPdfToExcel, isPythonAvailable } = require('../lib/pythonBridge');
 const ExcelJS = require('exceljs');
@@ -53,7 +53,7 @@ const ExcelJS = require('exceljs');
     console.log(`[pdfWorker] Python availability check: ${pythonOk}`);
     if (pythonOk) {
       console.log(`[pdfWorker] Using native multi-threaded Python engine for PDF extraction: ${filePath}`);
-      updateProgress(20);
+      updateProgress(20, '⚙️ पायथन 7-पिलर इंजन द्वारा PDF पार्सिंग और इमेज ग्रिड OCR...');
       const path = require('path');
       const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
       const excelDir = path.join(__dirname, '../uploads/excels');
@@ -63,7 +63,7 @@ const ExcelJS = require('exceljs');
       try {
         const pyResult = await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
         console.log(`[pdfWorker] Python engine finished successfully:`, pyResult);
-        updateProgress(50);
+        updateProgress(50, '📊 प्राथमिक एक्सेल तालिका से डेटा लोड किया जा रहा है...');
         
         const workbook = new ExcelJS.Workbook();
         await workbook.xlsx.readFile(targetExcelPath);
@@ -261,6 +261,43 @@ const ExcelJS = require('exceljs');
       }));
     }
 
+    // =========================================================================
+    // STEP 2: GROQ AI RE-VERIFICATION & QUALITY AUDITOR PASS
+    // Re-verifies all voter records, fixes any missing relatives or OCR artifacts
+    // before committing to the database.
+    // =========================================================================
+    if (finalVoterList.length > 0) {
+      updateProgress(65, '🤖 Groq AI द्वारा सभी नामों और डेटा का पुनर्सत्यापन (Re-verification) जारी है...');
+      try {
+        finalVoterList = await reverifyVotersListGroq(finalVoterList, (pct, msg) => {
+          const currentP = 65 + Math.round(pct * 0.15);
+          updateProgress(Math.min(currentP, 80), msg);
+        });
+      } catch (revErr) {
+        console.warn('[pdfWorker] Groq reverification notice:', revErr.message);
+      }
+      updateProgress(82, '✅ AI पुनर्सत्यापन संपन्न! अंतिम एक्सेल फ़ाइल अपडेट की जा रही है...');
+    }
+
+    // Auto-generate/update formatted Excel workbook with verified data for instant candidate/admin download
+    const path = require('path');
+    const { generateVoterExcel } = require('../lib/excelExporter');
+    const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
+    const excelPath = path.join(__dirname, '../uploads/excels', excelFilename);
+    let generatedExcelPath = null;
+    
+    try {
+      generatedExcelPath = await generateVoterExcel(finalVoterList, excelPath, { 
+        wardNo: wardNo || defaultWardNo, 
+        boothNo: boothNo || defaultPartNo 
+      });
+    } catch (excelErr) {
+      console.warn("Could not generate Excel file:", excelErr.message);
+      if (fs.existsSync(excelPath)) generatedExcelPath = excelPath;
+    }
+
+    updateProgress(88, '💾 डेटाबेस में सुरक्षित करने के लिए सत्यापित ऑपरेशन्स तैयार...');
+
     // Build MongoDB bulkWrite operations with strict quality filters
     const operations = finalVoterList
       .filter(v => {
@@ -324,28 +361,6 @@ const ExcelJS = require('exceljs');
           }
         };
       });
-
-    updateProgress(65);
-
-    // Auto-generate formatted Excel workbook for instant candidate/admin download
-    const path = require('path');
-    const { generateVoterExcel } = require('../lib/excelExporter');
-    const excelFilename = `${path.basename(filePath, path.extname(filePath))}_converted.xlsx`;
-    const excelPath = path.join(__dirname, '../uploads/excels', excelFilename);
-    let generatedExcelPath = null;
-    
-    if (fs.existsSync(excelPath)) {
-      generatedExcelPath = excelPath;
-    } else {
-      try {
-        generatedExcelPath = await generateVoterExcel(finalVoterList, excelPath, { 
-          wardNo: wardNo || defaultWardNo, 
-          boothNo: boothNo || defaultPartNo 
-        });
-      } catch (excelErr) {
-        console.warn("Could not generate Excel file:", excelErr.message);
-      }
-    }
 
     if (parentPort) {
       parentPort.postMessage({ 
