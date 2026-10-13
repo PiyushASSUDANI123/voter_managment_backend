@@ -509,7 +509,7 @@ router.get('/export.xlsx', async (req, res) => {
       'Relation': v.relationType,
       'Relative Name (English)': v.relativeNameEn,
       'Relative Name (Hindi)': v.relativeNameHi,
-      'House No': v.houseNo,
+      'House No': (!v.houseNo || ["'-", "-", "0", "000"].includes(String(v.houseNo).trim())) ? '' : String(v.houseNo).replace(/['"]/g, '').trim(),
       'Mobile': v.mobileNo,
       'Caste': v.caste,
       'Status': v.supportStatus,

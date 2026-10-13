@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { performLocalOCR, cleanHindiText, cleanHouseNo } = require('../lib/ocrService');
 const { isKrutiDevText, convertKrutiDevToUnicode, autoConvertText, isPUAText } = require('../lib/krutiDevConverter');
 const { needsAiRepair, repairVoterCardJs } = require('../lib/openrouterFallback');
+const { repairVoterCardGroq } = require('../lib/groqFallback');
 
 async function processPdf() {
   const { filePath, useOcr, organizationId, wardNo, boothNo, uploadedBy } = workerData;
@@ -236,16 +237,23 @@ const ExcelJS = require('exceljs');
 
     updateProgress(55);
 
-    // Pillar 8: OpenRouter AI Fallback ONLY if cards need repair and not already processed
-    const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 10);
+    // Pillar 8: Groq / OpenRouter AI Fallback ONLY if cards need repair
+    const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 15);
     if (needyCards.length > 0) {
       await Promise.allSettled(needyCards.map(async (v) => {
         try {
           const cardHint = `नाम: ${v.nameHi || ''}, मकान: ${v.houseNo || ''}, आयु: ${v.age || ''}, लिंग: ${v.gender || ''}`;
+          // Try high-speed Groq first, then OpenRouter
           await Promise.race([
-            repairVoterCardJs(cardHint, v),
-            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+            repairVoterCardGroq(cardHint, v),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
           ]);
+          if (needsAiRepair(v)) {
+            await Promise.race([
+              repairVoterCardJs(cardHint, v),
+              new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+            ]);
+          }
         } catch {}
       }));
     }
@@ -256,7 +264,7 @@ const ExcelJS = require('exceljs');
         if (!v) return false;
         const cleanN = (v.nameHi || '').trim();
         if (!cleanN || cleanN === 'मतदाता' || cleanN.length < 2) return false;
-        if (/^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या)/i.test(cleanN)) return false;
+        if (/^(?:विधानसभा|निर्वाचक|नामावली|वार्ड|अनुभाग|प्रारूप|मतदान|हस्ताक्षर|कलेण्डर|भाग|संख्या|ओसियाँ|ग्रामपंचायत|पंचायत|समिति|राजस्थान|आयोग)/i.test(cleanN)) return false;
         const hasEpic = v.epic && v.epic.length >= 5 && !v.epic.startsWith('VOTER_');
         // If epic is missing or generated, strictly require valid relative name AND authentic age
         const hasAuthenticDetails = v.relativeNameHi && v.relativeNameHi.length >= 2 && v.age && v.age >= 18 && v.age <= 125;

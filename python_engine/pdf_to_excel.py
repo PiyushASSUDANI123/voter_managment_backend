@@ -45,15 +45,23 @@ except ImportError:
         def krutidev_to_unicode(text): return text
         def fix_pua_to_devanagari(text): return text
 
-# Pillar 8: OpenRouter AI Fallback Engine (Zero-Cost / Selective Repair)
+# Pillar 8: Groq High-Speed & OpenRouter AI Fallback Engines (Zero-Cost / Selective Repair)
 try:
-    from openrouter_fallback import repair_single_voter_card, needs_ai_repair
+    from groq_fallback import repair_single_voter_card as repair_single_voter_card_groq, needs_ai_repair
 except ImportError:
     try:
-        from python_engine.openrouter_fallback import repair_single_voter_card, needs_ai_repair
+        from python_engine.groq_fallback import repair_single_voter_card as repair_single_voter_card_groq, needs_ai_repair
     except ImportError:
-        def repair_single_voter_card(text, record): return record
+        def repair_single_voter_card_groq(text, record): return record
         def needs_ai_repair(record): return False
+
+try:
+    from openrouter_fallback import repair_single_voter_card as repair_single_voter_card_openrouter
+except ImportError:
+    try:
+        from python_engine.openrouter_fallback import repair_single_voter_card as repair_single_voter_card_openrouter
+    except ImportError:
+        def repair_single_voter_card_openrouter(text, record): return record
 
 try:
     import fitz  # PyMuPDF
@@ -412,15 +420,23 @@ SEC_TYPO_MAP = {
     r'^म॒केश\b': 'मुकेश',
     r'^तेज\s*प्रकास\b': 'तेज प्रकाश',
     r'^ददुर्गाराम\b': 'दुर्गाराम',
-    r'^ज़गदीश\b': 'जगदीश',
-    r'^बाधुदेवी\b': 'बासुदेवी'
+    r'^ज़गदीश\b': 'जगदीश'
 }
+
+ADMIN_WORDS_BLACKLIST = [
+    'ओसियाँ', 'विधानसभा', 'निर्वाचक', 'नामावली', 'ग्रामपंचायत', 'पंचायत', 'समिति', 'राजस्थान', 'आयोग', 'प्रारूप', 'मतदान'
+]
 
 def clean_hindi_name(raw: str) -> str:
     """Strips labels, watermarks, and applies typography corrections (F4)"""
     if not raw:
         return ""
     n = raw.strip()
+    
+    # Reject administrative / geographical words mistakenly captured as voter names
+    if any(w in n for w in ADMIN_WORDS_BLACKLIST):
+        return ""
+
     # Strip invisible joiners (ZWJ/ZWNJ)
     n = n.replace('\u200d', '').replace('\u200c', '')
     # Standardize stray nuktas
@@ -785,12 +801,17 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                 "status": status
             }
 
-            # PILLAR 8: OpenRouter AI Fallback ONLY IF DATA IS MISSING OR CORRUPTED
+            # PILLAR 8: Groq AI Fallback first, then OpenRouter (ONLY IF DATA IS MISSING OR CORRUPTED)
             if needs_ai_repair(card_record):
                 try:
-                    card_record = repair_single_voter_card(card_text_str, card_record)
+                    card_record = repair_single_voter_card_groq(card_text_str, card_record)
                 except Exception:
                     pass
+                if needs_ai_repair(card_record):
+                    try:
+                        card_record = repair_single_voter_card_openrouter(card_text_str, card_record)
+                    except Exception:
+                        pass
 
             if card_record["nameHi"] and card_record["nameHi"] != "मतदाता" and len(card_record["nameHi"]) >= 2:
                 page_cards.append(card_record)
