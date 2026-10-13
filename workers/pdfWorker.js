@@ -3,7 +3,7 @@ const fs = require('fs');
 const pdfParse = require('pdf-parse');
 const crypto = require('crypto');
 const { performLocalOCR, cleanHindiText, cleanHouseNo } = require('../lib/ocrService');
-const { isKrutiDevText, convertKrutiDevToUnicode } = require('../lib/krutiDevConverter');
+const { isKrutiDevText, convertKrutiDevToUnicode, autoConvertText, isPUAText } = require('../lib/krutiDevConverter');
 
 async function processPdf() {
   const { filePath, useOcr, organizationId, wardNo, boothNo, uploadedBy } = workerData;
@@ -148,10 +148,13 @@ const ExcelJS = require('exceljs');
       // FAST TEXT-BASED EXTRACTION
       updateProgress(30);
 
-      // Check if text uses legacy KrutiDev encoding
+      // Check if text uses legacy encoding (KrutiDev, PUA, etc.)
       if (isKrutiDevText(text)) {
         console.log("Detected KrutiDev font encoding. Converting to Unicode Devanagari...");
         text = convertKrutiDevToUnicode(text);
+      } else if (isPUAText(text)) {
+        console.log("Detected PUA (Private Use Area) font encoding. Converting to Unicode Devanagari...");
+        text = autoConvertText(text);
       }
 
       // Universal Age/Gender block splitter

@@ -43,12 +43,14 @@ async function sync() {
 
     if (votersBySerial.has(key)) {
       const existing = votersBySerial.get(key);
-      // If supplementary list marks it Deleted, update status to Deleted
       if (status === 'Deleted') {
         existing.status = 'Deleted';
-      }
-      if (relativeNameHi && !existing.relativeNameHi) {
-        existing.relativeNameHi = relativeNameHi;
+        if (nameHi && nameHi.length >= 2) existing.nameHi = nameHi;
+        if (relativeNameHi) existing.relativeNameHi = relativeNameHi;
+        if (relationType) existing.relationType = ['पति', 'माता', 'अन्य'].includes(relationType) ? relationType : 'पिता';
+        if (houseNo && houseNo !== '-') existing.houseNo = houseNo;
+        if (age && age >= 18 && age <= 125) existing.age = age;
+        if (gender) existing.gender = ['स्त्री', 'महिला'].includes(gender) ? 'स्त्री' : 'पुरुष';
       }
     } else {
       votersBySerial.set(key, {
@@ -60,8 +62,8 @@ async function sync() {
         relativeNameHi,
         relativeNameEn: '',
         relationType: ['पति', 'माता', 'अन्य'].includes(relationType) ? relationType : 'पिता',
-        houseNo,
-        age: (age && age >= 18 && age <= 125) ? age : 30,
+        houseNo: houseNo || '-',
+        age: (age && age >= 18 && age <= 125) ? age : null,
         gender: ['स्त्री', 'महिला'].includes(gender) ? 'स्त्री' : 'पुरुष',
         status,
         wardNo: wardNo || '1',

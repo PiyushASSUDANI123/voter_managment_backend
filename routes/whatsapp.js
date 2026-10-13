@@ -4,7 +4,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { verifyToken, requireModule, isAdmin } = require('../middleware/authMiddleware');
-const { addVoterAccess } = require('../lib/access');
+const { addVoterAccess, getEffectiveOrgId } = require('../lib/access');
 const { Voter, SlipDispatch, Organization } = require('../models/index');
 
 /**
@@ -868,8 +868,9 @@ router.get('/view/:id', async (req, res) => {
 router.get('/history', verifyToken, requireModule('voters'), async (req, res) => {
   try {
     const query = {};
-    if (req.user.role !== 'admin') {
-      query.organizationId = req.user.organizationId || 'org_default';
+    const targetOrgId = getEffectiveOrgId(req);
+    if (targetOrgId) {
+      query.organizationId = targetOrgId;
     }
 
     const dispatches = await SlipDispatch.find(query).sort({ createdAt: -1 }).limit(100).lean();
@@ -974,7 +975,7 @@ const DEFAULT_PRESET_TEMPLATES = [
  */
 router.get('/templates', verifyToken, async (req, res) => {
   try {
-    const orgId = req.query.organizationId || req.user.organizationId || 'org_default';
+    const orgId = getEffectiveOrgId(req) || 'org_default';
     const org = await Organization.findById(orgId).lean();
     const activeTemplate = org?.whatsappConfig?.templateName || org?.slipConfig?.whatsappTemplateName || 'voter_slip_dispatch';
     const activeLanguage = org?.whatsappConfig?.templateLanguage || 'hi';
@@ -1220,7 +1221,7 @@ router.post('/templates/test-send', verifyToken, async (req, res) => {
  */
 router.get('/config', verifyToken, isAdmin, async (req, res) => {
   try {
-    const orgId = req.query.organizationId || 'org_default';
+    const orgId = getEffectiveOrgId(req) || 'org_default';
     const config = await getEffectiveMetaConfig(orgId);
     res.json({
       phoneNumberId: config.phoneNumberId || '',

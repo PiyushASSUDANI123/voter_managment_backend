@@ -1,6 +1,6 @@
 const express = require('express');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
-const { addVoterAccess } = require('../lib/access');
+const { addVoterAccess, getEffectiveOrgId } = require('../lib/access');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
 const { Voter, Organization, SlipDispatch } = require('../models/index');
 
@@ -262,10 +262,9 @@ router.get('/community', requireModule('community'), async (req, res) => {
 router.get('/dispatches', requireModule('history'), async (req, res) => {
   try {
     const query = {};
-    if (req.user.role !== 'admin') {
-      query.organizationId = req.user.organizationId || 'org_default';
-    } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim() && req.query.organizationId.trim() !== 'all') {
-      query.organizationId = req.query.organizationId.trim();
+    const targetOrgId = getEffectiveOrgId(req);
+    if (targetOrgId) {
+      query.organizationId = targetOrgId;
     }
 
     if (typeof req.query.search === 'string' && req.query.search.trim()) {
@@ -364,13 +363,11 @@ router.delete('/dispatches', async (req, res) => {
       return res.status(403).json({ message: 'Only administrators can delete dispatch records.' });
     }
 
-    const { ids, all, organizationId } = req.body || {};
+    const { ids, all } = req.body || {};
     const query = {};
-
-    if (req.user.role !== 'admin') {
-      query.organizationId = req.user.organizationId || 'org_default';
-    } else if (typeof organizationId === 'string' && organizationId.trim() && organizationId.trim() !== 'all') {
-      query.organizationId = organizationId.trim();
+    const targetOrgId = getEffectiveOrgId(req);
+    if (targetOrgId) {
+      query.organizationId = targetOrgId;
     }
 
     if (Array.isArray(ids) && ids.length > 0) {
@@ -411,10 +408,9 @@ router.get('/export.xlsx', async (req, res) => {
 
     if (dataset === 'dispatches') {
       const dispatchQuery = {};
-      if (req.user.role !== 'admin') {
-        dispatchQuery.organizationId = req.user.organizationId || 'org_default';
-      } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
-        dispatchQuery.organizationId = req.query.organizationId.trim();
+      const targetOrgId = getEffectiveOrgId(req);
+      if (targetOrgId) {
+        dispatchQuery.organizationId = targetOrgId;
       }
       if (typeof req.query.search === 'string' && req.query.search.trim()) {
         const search = new RegExp(escapeRegex(req.query.search.trim()), 'i');

@@ -15,15 +15,15 @@ const boundedInteger = (value, fallback, maximum) => {
 router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 'warroom'), async (req, res) => {
   try {
     const { ward } = req.query;
-    const cacheKey = `voters_all_${req.user.organizationId}_${req.user.id}_${ward || 'all'}`;
+    const query = addVoterAccess(req);
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const cacheKey = `voters_all_${orgId}_${req.user.id}_${ward || 'all'}`;
     
     // Check Cache
     const cachedData = cache.get(cacheKey);
     if (cachedData) {
       return res.json(cachedData);
     }
-
-    const query = addVoterAccess(req);
     
     if (typeof ward === 'string' && ward.trim()) {
       query.wardNo = new RegExp(ward.trim(), 'i');
@@ -44,11 +44,11 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
 // Get unique wards list with counts for current organization (Cached 5m)
 router.get('/wards-summary', verifyToken, requireModule('voters', 'community', 'poll-desk'), async (req, res) => {
   try {
-    const cacheKey = `wards_summary_${req.user.organizationId}_${req.user.id}`;
+    const query = addVoterAccess(req);
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const cacheKey = `wards_summary_${orgId}_${req.user.id}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
-
-    const query = addVoterAccess(req);
     const rawWards = await Voter.aggregate([
       { $match: query },
       { $group: { _id: '$wardNo', count: { $sum: 1 } } }
@@ -251,8 +251,9 @@ router.put('/:id', verifyToken, (req, res, next) => {
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
 
     // Invalidate Cache for this organization
-    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
-    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
+    const orgKey = query.organizationId || req.user.organizationId || 'org_default';
+    cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`wards_summary_${orgKey}_`);
 
     res.json(voter);
   } catch (err) {
@@ -283,7 +284,8 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     if (!voter) return res.status(404).json({ message: 'Voter not found or access denied.' });
     
     // Invalidate Cache for this organization
-    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
+    const orgKey = query.organizationId || req.user.organizationId || 'org_default';
+    cache.delPrefix(`voters_all_${orgKey}_`);
     
     res.json({ success: true, message: 'Vote status updated.' });
   } catch (err) {
@@ -314,8 +316,9 @@ router.delete('/:id', verifyToken, async (req, res) => {
     }
 
     // Invalidate Cache for this organization
-    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
-    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
+    const orgKey = query.organizationId || req.user.organizationId || 'org_default';
+    cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`wards_summary_${orgKey}_`);
 
     res.json({ success: true, message: 'मतदाता सफलतापूर्वक डिलीट कर दिया गया।' });
   } catch (err) {
@@ -344,8 +347,9 @@ router.post('/bulk-delete', verifyToken, async (req, res) => {
     const result = await Voter.deleteMany(query);
 
     // Invalidate Cache for this organization
-    cache.delPrefix(`voters_all_${req.user.organizationId}_`);
-    cache.delPrefix(`wards_summary_${req.user.organizationId}_`);
+    const orgKey = query.organizationId || req.user.organizationId || 'org_default';
+    cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`wards_summary_${orgKey}_`);
 
     res.json({ success: true, message: `${result.deletedCount} मतदाता सफलतापूर्वक डिलीट कर दिए गए।`, deletedCount: result.deletedCount });
   } catch (err) {

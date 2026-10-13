@@ -2,6 +2,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { User, Organization, Voter } = require('../models/index');
 const { verifyToken, isOrganizationAdmin, requireModule } = require('../middleware/authMiddleware');
+const { getEffectiveOrgId } = require('../lib/access');
 
 const router = express.Router();
 const roles = ['Operator', 'Booth Agent', 'Karyakarta', 'Viewer'];
@@ -13,10 +14,9 @@ const isPlatformAdmin = (req) => req.user.role === 'admin';
 const selectAccounts = async (req, workersOnly) => {
   const query = {};
   
-  if (!isPlatformAdmin(req)) {
-    query.organizationId = orgFor(req);
-  } else if (typeof req.query.organizationId === 'string' && req.query.organizationId.trim()) {
-    query.organizationId = req.query.organizationId.trim();
+  const targetOrgId = getEffectiveOrgId(req);
+  if (targetOrgId) {
+    query.organizationId = targetOrgId;
   }
   
   if (workersOnly) {
@@ -144,9 +144,9 @@ router.post('/', verifyToken, isOrganizationAdmin, async (req, res) => {
       return res.status(400).json({ message: 'Valid name, email, and an 8-character password are required.' });
     }
     
-    const requestedOrganizationId = req.body.organizationId;
-    const orgId = isPlatformAdmin(req) && typeof requestedOrganizationId === 'string' && requestedOrganizationId.trim()
-      ? requestedOrganizationId.trim()
+    const targetOrgId = getEffectiveOrgId(req);
+    const orgId = isPlatformAdmin(req) && targetOrgId
+      ? targetOrgId
       : orgFor(req);
     const org = await Organization.findById(orgId).lean();
 
