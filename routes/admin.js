@@ -23,11 +23,23 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
       const adminCount = await User.countDocuments({ organizationId: o._id, role: 'tenant_admin' });
       const activeWorkers = await User.countDocuments({ organizationId: o._id, role: 'worker', isActive: true });
       const voterCount = await Voter.countDocuments({ organizationId: o._id });
+
+      let adminEmail = o.adminEmail || '';
+      let initialPassword = o.initialPassword || o.demoPassword || '';
+      if (!adminEmail || !initialPassword) {
+        const adminUser = await User.findOne({ organizationId: o._id, role: 'tenant_admin' }).lean();
+        if (adminUser) {
+          adminEmail = adminEmail || adminUser.email || '';
+          initialPassword = initialPassword || adminUser.initialPassword || adminUser.demoPassword || '';
+        }
+      }
       
       return {
         id: o._id, name: o.name, modules: o.enabledModules || [],
         wards: o.allowedWards || [], isActive: o.isActive, createdAt: o.createdAt,
         adminCount, activeWorkers, voterCount,
+        adminEmail,
+        initialPassword,
         whatsappEnabled: o.whatsappEnabled !== false,
         whatsappCredits: typeof o.whatsappCredits === 'number' ? o.whatsappCredits : 100,
         whatsappUsed: typeof o.whatsappUsed === 'number' ? o.whatsappUsed : 0,
@@ -102,6 +114,8 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
       name: name.trim(),
       enabledModules: enabledModules,
       allowedWards: allowedWards,
+      adminEmail: sanitizedEmail,
+      initialPassword: password,
       whatsappEnabled: isWpEnabled,
       whatsappCredits: initialCredits,
       whatsappUsed: 0,
@@ -114,6 +128,7 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
       _id: `user_${crypto.randomUUID()}`,
       email: sanitizedEmail,
       passwordHash: passwordHash,
+      initialPassword: password,
       fullName: `${name.trim()} Admin`,
       phone: '0000000000',
       role: 'tenant_admin',
@@ -141,6 +156,7 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
         id,
         name: name.trim(),
         email: sanitizedEmail,
+        password: password,
         modules: enabledModules,
         wards: allowedWards,
         whatsappCredits: initialCredits,

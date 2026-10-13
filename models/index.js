@@ -22,6 +22,8 @@ const organizationSchema = new mongoose.Schema({
   district: { type: String, default: '' },
   ulbPanchayatSamiti: { type: String, default: '' },
   ulbWardGramPanchayat: { type: String, default: '' },
+  adminEmail: { type: String, default: '' },
+  initialPassword: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -30,6 +32,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   username: { type: String, default: null },
   passwordHash: { type: String, required: true },
+  initialPassword: { type: String, default: null },
   fullName: { type: String, required: true },
   phone: { type: String, required: true },
   role: { type: String, required: true },
