@@ -145,7 +145,7 @@ const ExcelJS = require('exceljs');
           });
       }
 
-    } else {
+    } else if (finalVoterList.length === 0) {
       // FAST TEXT-BASED EXTRACTION
       updateProgress(30);
 
@@ -236,14 +236,18 @@ const ExcelJS = require('exceljs');
 
     updateProgress(55);
 
-    // Pillar 8: OpenRouter AI Fallback ONLY for cards with missing father or voter name
-    for (let i = 0; i < finalVoterList.length; i++) {
-      if (needsAiRepair(finalVoterList[i])) {
+    // Pillar 8: OpenRouter AI Fallback ONLY if cards need repair and not already processed
+    const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 10);
+    if (needyCards.length > 0) {
+      await Promise.allSettled(needyCards.map(async (v) => {
         try {
-          const cardHint = `नाम: ${finalVoterList[i].nameHi || ''}, मकान: ${finalVoterList[i].houseNo || ''}, आयु: ${finalVoterList[i].age || ''}, लिंग: ${finalVoterList[i].gender || ''}`;
-          await repairVoterCardJs(cardHint, finalVoterList[i]);
+          const cardHint = `नाम: ${v.nameHi || ''}, मकान: ${v.houseNo || ''}, आयु: ${v.age || ''}, लिंग: ${v.gender || ''}`;
+          await Promise.race([
+            repairVoterCardJs(cardHint, v),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))
+          ]);
         } catch {}
-      }
+      }));
     }
 
     // Build MongoDB bulkWrite operations with strict quality filters
