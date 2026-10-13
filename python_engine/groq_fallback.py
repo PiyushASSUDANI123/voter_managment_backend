@@ -47,13 +47,24 @@ def needs_ai_repair(record: Dict[str, Any]) -> bool:
     rel_name = str(record.get("relativeNameHi") or record.get("relativeName") or "").strip()
 
     # Reject administrative or city names mistakenly captured as voter names
-    if any(w in name for w in ADMIN_WORDS):
+    if any(w in name for w in ADMIN_WORDS) or any(w in rel_name for w in ADMIN_WORDS):
         return True
 
+    # Missing or too short names
     if not name or len(name) < 2:
         return True
 
     if not rel_name or len(rel_name) < 2 or rel_name in ["-", "—", "nil", "na", "null"]:
+        return True
+
+    # Detect OCR noise, symbols, numbers or Latin characters in names
+    if re.search(r'[|«»<>\\/_~`!@#$%^&*()_+=\[\]{}0-9A-Za-z]', name + rel_name):
+        return True
+
+    # Detect label bleed (e.g. 'का नाम', 'कर नरम', 'नपतर', 'पिता', 'पति')
+    if any(k in name for k in ['का नाम', 'कर नरम', 'नपतर', 'पिता', 'पति', 'माता']):
+        return True
+    if any(k in rel_name for k in ['का नाम', 'कर नरम', 'नपतर']):
         return True
 
     return False
@@ -149,11 +160,28 @@ def repair_single_voter_card(card_raw_text: str, current_record: Dict[str, Any])
     rel_name = re.sub(r'^(?:पिता|पति|माता|वालिद|आत्मज|सुपुत्र|पत्नी)[:\s\-]*', '', rel_name).strip()
 
     cur_name = str(current_record.get("nameHi") or current_record.get("name") or "").strip()
-    if (not cur_name or len(cur_name) < 2 or any(w in cur_name for w in ADMIN_WORDS)) and name and not any(w in name for w in ADMIN_WORDS):
+    cur_rel = str(current_record.get("relativeNameHi") or current_record.get("relativeName") or "").strip()
+
+    should_update_name = (
+        not cur_name
+        or len(cur_name) < 2
+        or any(w in cur_name for w in ADMIN_WORDS)
+        or bool(re.search(r'[|«»<>\\/_~`!@#$%^&*()_+=\[\]{}0-9A-Za-z]', cur_name))
+        or any(k in cur_name for k in ['का नाम', 'कर नरम', 'नपतर', 'पिता', 'पति', 'माता'])
+    )
+    if should_update_name and name and not any(w in name for w in ADMIN_WORDS):
         current_record["name"] = name
         current_record["nameHi"] = name
 
-    if (not current_record.get("relativeNameHi") or len(current_record["relativeNameHi"]) < 2 or current_record["relativeNameHi"] in ["-", "—"]) and len(rel_name) >= 2:
+    should_update_rel = (
+        not cur_rel
+        or len(cur_rel) < 2
+        or cur_rel in ["-", "—", "nil", "na", "null"]
+        or any(w in cur_rel for w in ADMIN_WORDS)
+        or bool(re.search(r'[|«»<>\\/_~`!@#$%^&*()_+=\[\]{}0-9A-Za-z]', cur_rel))
+        or any(k in cur_rel for k in ['का नाम', 'कर नरम', 'नपतर'])
+    )
+    if should_update_rel and rel_name and not any(w in rel_name for w in ADMIN_WORDS):
         current_record["relativeName"] = rel_name
         current_record["relativeNameHi"] = rel_name
 

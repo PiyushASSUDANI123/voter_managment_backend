@@ -420,27 +420,7 @@ SEC_TYPO_MAP = {
     r'^म॒केश\b': 'मुकेश',
     r'^तेज\s*प्रकास\b': 'तेज प्रकाश',
     r'^ददुर्गाराम\b': 'दुर्गाराम',
-    r'^ज़गदीश\b': 'जगदीश',
-    r'\bखर[पयन]\b': 'खां',
-    r'\bबरनय\b': 'बानो',
-    r'\bससह\b': 'सिंह',
-    r'\bलसह\b': 'सिंह',
-    r'\bकंरा\b': 'कंवर',
-    r'\bसुसरा\b': 'सुथार',
-    r'\bपजरंत\b': 'प्रजापत',
-    r'\bदलंप\b': 'दिलीप',
-    r'\bलनलता\b': 'ललिता',
-    r'\bललला\b': 'लीला',
-    r'\bसोरनलाल\b': 'सोहनलाल',
-    r'\bसत\s*जनरारजण[ण]?\b': 'सत्यनारायण',
-    r'\bप्त्यनारायण\b': 'सत्यनारायण',
-    r'\bशेर\s*मोहन\s*मद\b': 'शेर मोहम्मद',
-    r'\bभंवा\s*लाल\b': 'भंवर लाल',
-    r'\bलरदुराम\b': 'लादूराम',
-    r'\bसराल\s*राम\b': 'सवाराम',
-    r'\bसरालराम\b': 'सवाराम',
-    r'\bजगमरी\s*राम\b': 'जगमाल राम',
-    r'\bनरनोद\s*कुमार\b': 'विनोद कुमार'
+    r'^ज़गदीश\b': 'जगदीश'
 }
 
 ADMIN_WORDS_BLACKLIST = [
@@ -890,12 +870,13 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             # PILLAR 8: Groq AI Fallback first, then OpenRouter (ONLY IF DATA IS MISSING OR CORRUPTED)
             if needs_ai_repair(card_record):
                 try:
-                    card_record = repair_single_voter_card_groq(card_text_str, card_record)
+                    ocr_context = f"Voter Name: {name}\nRelative: {rel_name}\nRelation: {rel_type}\nCard Raw Text: {card_text_str}"
+                    card_record = repair_single_voter_card_groq(ocr_context, card_record)
                 except Exception:
                     pass
                 if needs_ai_repair(card_record):
                     try:
-                        card_record = repair_single_voter_card_openrouter(card_text_str, card_record)
+                        card_record = repair_single_voter_card_openrouter(ocr_context, card_record)
                     except Exception:
                         pass
 
