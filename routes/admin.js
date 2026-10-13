@@ -31,7 +31,10 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
         whatsappEnabled: o.whatsappEnabled !== false,
         whatsappCredits: typeof o.whatsappCredits === 'number' ? o.whatsappCredits : 100,
         whatsappUsed: typeof o.whatsappUsed === 'number' ? o.whatsappUsed : 0,
-        slipConfig: o.slipConfig || {}
+        slipConfig: o.slipConfig || {},
+        district: o.district || '',
+        ulbPanchayatSamiti: o.ulbPanchayatSamiti || '',
+        ulbWardGramPanchayat: o.ulbWardGramPanchayat || '',
       };
     }));
     
@@ -46,30 +49,55 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
   const { name, email, password } = req.body;
   const moduleList = req.body.modules;
   const wards = req.body.wards;
-  if (typeof name !== 'string' || !name.trim()
-    || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
-    || typeof password !== 'string' || password.length < 8) {
-    return res.status(400).json({ message: 'Organization name, valid admin email, and an 8-character password are required.' });
+  const district = typeof req.body.district === 'string' ? req.body.district.trim() : '';
+  const ulbPanchayatSamiti = typeof req.body.ulbPanchayatSamiti === 'string' ? req.body.ulbPanchayatSamiti.trim() : '';
+  const ulbWardGramPanchayat = typeof req.body.ulbWardGramPanchayat === 'string' ? req.body.ulbWardGramPanchayat.trim() : '';
+
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ message: 'क्लाइंट / संगठन का नाम आवश्यक है।' });
   }
-  if (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module))
-    || !Array.isArray(wards) || !wards.every((ward) => typeof ward === 'string' && ward.trim())) {
-    return res.status(400).json({ message: 'Choose valid modules and ward names.' });
+
+  if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+    return res.status(400).json({ message: 'कृपया वैध क्लाइंट एडमिन ईमेल दर्ज करें।' });
+  }
+
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ message: 'पासवर्ड कम-से-कम 8 अक्षरों का होना चाहिए।' });
+  }
+
+  if (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module))) {
+    return res.status(400).json({ message: 'कृपया मान्य मॉड्यूल चुनें।' });
+  }
+
+  const sanitizedEmail = email.trim().toLowerCase();
+  const existingUser = await User.findOne({ email: sanitizedEmail }).lean();
+  if (existingUser) {
+    return res.status(409).json({ message: `इस एडमिन ईमेल (${sanitizedEmail}) पर पहले से खाता मौजूद है। कृपया दूसरा ईमेल प्रयोग करें।` });
   }
 
   const id = `tenant_${crypto.randomUUID()}`;
   const enabledModules = [...new Set([...moduleList, 'accounts'])];
-  const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
+  const allowedWards = Array.isArray(wards)
+    ? [...new Set(wards.map((ward) => String(ward).trim()).filter(Boolean))]
+    : [];
   const initialCredits = Number.isInteger(Number(req.body.whatsappCredits)) ? Math.max(0, Number(req.body.whatsappCredits)) : 100;
   const isWpEnabled = typeof req.body.whatsappEnabled === 'boolean' ? req.body.whatsappEnabled : true;
   const slipConfig = req.body.slipConfig && typeof req.body.slipConfig === 'object' ? req.body.slipConfig : {};
-  
-  const session = await mongoose.startSession();
+
+  let session = null;
+  let inTransaction = false;
   try {
+    session = await mongoose.startSession();
     session.startTransaction();
-    
+    inTransaction = true;
+  } catch {
+    session = null;
+    inTransaction = false;
+  }
+
+  try {
     const passwordHash = await bcrypt.hash(password, 10);
-    
-    await Organization.create([{
+    const orgPayload = {
       _id: id,
       name: name.trim(),
       enabledModules: enabledModules,
@@ -77,28 +105,63 @@ router.post('/organizations', verifyToken, isAdmin, async (req, res) => {
       whatsappEnabled: isWpEnabled,
       whatsappCredits: initialCredits,
       whatsappUsed: 0,
-      slipConfig: slipConfig
-    }], { session });
-    
-    await User.create([{
+      slipConfig: slipConfig,
+      district,
+      ulbPanchayatSamiti,
+      ulbWardGramPanchayat,
+    };
+    const userPayload = {
       _id: `user_${crypto.randomUUID()}`,
-      email: email.trim().toLowerCase(),
+      email: sanitizedEmail,
       passwordHash: passwordHash,
-      fullName: 'Tenant Admin',
+      fullName: `${name.trim()} Admin`,
       phone: '0000000000',
       role: 'tenant_admin',
-      organizationId: id
-    }], { session });
-    
-    await session.commitTransaction();
-    res.status(201).json({ success: true, message: 'Organization created successfully' });
+      organizationId: id,
+    };
+
+    if (inTransaction && session) {
+      await Organization.create([orgPayload], { session });
+      await User.create([userPayload], { session });
+      await session.commitTransaction();
+    } else {
+      await Organization.create(orgPayload);
+      try {
+        await User.create(userPayload);
+      } catch (userErr) {
+        await Organization.deleteOne({ _id: id });
+        throw userErr;
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `क्लाइंट '${name.trim()}' और उसका एडमिन अकाउंट सफलतापूर्वक बन गया!`,
+      organization: {
+        id,
+        name: name.trim(),
+        email: sanitizedEmail,
+        modules: enabledModules,
+        wards: allowedWards,
+        whatsappCredits: initialCredits,
+        district,
+        ulbPanchayatSamiti,
+        ulbWardGramPanchayat,
+      },
+    });
   } catch (err) {
-    await session.abortTransaction();
-    if (err.code === 11000) return res.status(409).json({ message: 'Admin email is already registered.' });
+    if (inTransaction && session) {
+      try { await session.abortTransaction(); } catch { /* ignore */ }
+    }
+    if (err.code === 11000) {
+      return res.status(409).json({ message: `इस एडमिन ईमेल (${sanitizedEmail}) पर पहले से खाता मौजूद है।` });
+    }
     console.error('Organization creation failed:', err.message);
-    res.status(500).json({ message: 'Could not create organization.' });
+    res.status(500).json({ message: `क्लाइंट खाता नहीं बन सका: ${err.message}` });
   } finally {
-    session.endSession();
+    if (session) {
+      try { session.endSession(); } catch { /* ignore */ }
+    }
   }
 });
 
@@ -108,14 +171,15 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
   const wards = req.body.wards;
   
   if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ message: 'Organization name is required.' });
-  if (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module))
-    || !Array.isArray(wards) || !wards.every((ward) => typeof ward === 'string' && ward.trim())) {
-    return res.status(400).json({ message: 'Choose valid modules and ward names.' });
+  if (!Array.isArray(moduleList) || !moduleList.every((module) => availableModules.includes(module))) {
+    return res.status(400).json({ message: 'Choose valid modules.' });
   }
   
   try {
     const enabledModules = [...new Set([...moduleList, 'accounts'])];
-    const allowedWards = [...new Set(wards.map((ward) => ward.trim()))];
+    const allowedWards = Array.isArray(wards)
+      ? [...new Set(wards.map((ward) => String(ward).trim()).filter(Boolean))]
+      : [];
     
     const updatePayload = {
       name: name.trim(),
@@ -123,6 +187,16 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
       allowedWards,
       isActive: typeof isActive === 'boolean' ? isActive : true
     };
+
+    if (typeof req.body.district === 'string') {
+      updatePayload.district = req.body.district.trim();
+    }
+    if (typeof req.body.ulbPanchayatSamiti === 'string') {
+      updatePayload.ulbPanchayatSamiti = req.body.ulbPanchayatSamiti.trim();
+    }
+    if (typeof req.body.ulbWardGramPanchayat === 'string') {
+      updatePayload.ulbWardGramPanchayat = req.body.ulbWardGramPanchayat.trim();
+    }
 
     if (typeof req.body.whatsappEnabled === 'boolean') {
       updatePayload.whatsappEnabled = req.body.whatsappEnabled;

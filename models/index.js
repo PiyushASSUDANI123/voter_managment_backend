@@ -19,6 +19,9 @@ const organizationSchema = new mongoose.Schema({
   },
   isDemo: { type: Boolean, default: false },
   demoPassword: { type: String, default: null },
+  district: { type: String, default: '' },
+  ulbPanchayatSamiti: { type: String, default: '' },
+  ulbWardGramPanchayat: { type: String, default: '' },
   createdAt: { type: Date, default: Date.now }
 });
 
