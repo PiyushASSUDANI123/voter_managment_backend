@@ -150,9 +150,11 @@ def repair_single_voter_card(card_raw_text: str, current_record: Dict[str, Any])
 
     cur_name = str(current_record.get("nameHi") or current_record.get("name") or "").strip()
     if (not cur_name or len(cur_name) < 2 or any(w in cur_name for w in ADMIN_WORDS)) and name and not any(w in name for w in ADMIN_WORDS):
+        current_record["name"] = name
         current_record["nameHi"] = name
 
     if (not current_record.get("relativeNameHi") or len(current_record["relativeNameHi"]) < 2 or current_record["relativeNameHi"] in ["-", "—"]) and len(rel_name) >= 2:
+        current_record["relativeName"] = rel_name
         current_record["relativeNameHi"] = rel_name
 
     if rel_type in ["पिता", "पति", "माता"]:
