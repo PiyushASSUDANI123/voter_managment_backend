@@ -20,6 +20,10 @@ import warnings
 from typing import List, Dict, Any, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor
 
+# Optimize Surya OCR token budget for card-level extraction
+os.environ['SURYA_MAX_TOKENS_FULL_PAGE'] = '350'
+os.environ['SURYA_MAX_TOKENS_LAYOUT'] = '350'
+
 # Suppress minor PyTorch warnings
 warnings.filterwarnings("ignore")
 
@@ -104,6 +108,161 @@ def get_easyocr_reader():
             sys.stderr.write(f"EasyOCR initialization notice: {e}\n")
             _EASYOCR_READER = False
     return _EASYOCR_READER if _EASYOCR_READER is not False else None
+
+
+# Global Surya OCR Predictor Singleton
+_SURYA_PREDICTOR = None
+
+def get_surya_predictor():
+    """Lazily load Surya OCR recognition predictor singleton"""
+    global _SURYA_PREDICTOR
+    if _SURYA_PREDICTOR is None:
+        try:
+            from surya.recognition import RecognitionPredictor
+            _SURYA_PREDICTOR = RecognitionPredictor()
+        except Exception as e:
+            sys.stderr.write(f"Surya OCR initialization notice: {e}\n")
+            _SURYA_PREDICTOR = False
+    return _SURYA_PREDICTOR if _SURYA_PREDICTOR is not False else None
+
+
+def surya_recognize_card(card_img: Image.Image) -> Dict[str, Any]:
+    """Extracts structured voter card data using Surya OCR Neural Vision"""
+    predictor = get_surya_predictor()
+    if not predictor:
+        return {}
+
+    try:
+        res = predictor([card_img])[0]
+        name, rel_name, rel_type = "", "", "पिता"
+        house, age, gender, status = "", None, "पुरुष", "Active"
+
+        for b in res.blocks:
+            raw = b.html if hasattr(b, 'html') else getattr(b, 'text', '')
+            t = re.sub(r'<[^>]+>', ' ', raw).strip()
+            t = re.sub(r'\s+', ' ', t)
+            if not t:
+                continue
+
+            if re.search(r'DELETED|ELETED|विलोपित', t, re.I):
+                status = 'Deleted'
+
+            nm = re.search(r'(?:मतदाता\s*(?:का)?\s*)?नाम\s*[:ः\-\s]+(.+)', t)
+            if nm and not re.search(r'पिता|पति|माता|अन्य', t) and not name:
+                c = clean_hindi_name(nm.group(1))
+                if c and c != 'मतदाता':
+                    name = c
+
+            rm = re.search(r'(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम\s*[:ः\-\s]*(.+)', t)
+            if rm and not rel_name:
+                rel_type = rm.group(1)
+                c = clean_hindi_name(rm.group(2))
+                if c:
+                    rel_name = c
+
+            hm = re.search(r'(?:मकान|गृह)\s*(?:संख्या|नंबर|नं|क्रं)?\s*[:ः\-\s]*(.+)', t)
+            if hm and not house:
+                c = hm.group(1).strip()
+                c = re.sub(r'^(?:संख्या|नंबर|नं|क्रं)+[:ः\-\s]*', '', c).strip()
+                if c and c not in ['-', '०', ':', '']:
+                    house = clean_house_no(c)
+
+            am = re.search(r'आयु\s*[:ः\-\s]*(\d+)', t)
+            if am and age is None:
+                try:
+                    v = int(am.group(1))
+                    if 18 <= v <= 125:
+                        age = v
+                except:
+                    pass
+
+            gm = re.search(r'लिंग\s*[:ः\-\s]*([^\s\n]+)', t)
+            if gm:
+                g = gm.group(1)
+                if 'स्त्री' in g or 'महिला' in g:
+                    gender = 'स्त्री'
+                elif 'पुरुष' in g or 'पुरूष' in g:
+                    gender = 'पुरुष'
+
+        if rel_type == 'पति':
+            gender = 'स्त्री'
+
+        return {
+            'name': name,
+            'rel_name': rel_name,
+            'rel_type': rel_type,
+            'house': house,
+            'age': age,
+            'gender': gender,
+            'status': status
+        }
+    except Exception as e:
+        sys.stderr.write(f"Surya recognition error: {e}\n")
+        return {}
+
+
+def parse_full_card_tess(text: str) -> Dict[str, Any]:
+    """Parses a multi-line OCR text block of a single voter card"""
+    name, rel_name, rel_type = "", "", "पिता"
+    house, age, gender, status = "", None, "पुरुष", "Active"
+
+    if re.search(r'DELETED|ELETED|विलोपित', text, re.I):
+        status = 'Deleted'
+
+    for l in text.splitlines():
+        l = l.strip()
+        if not l:
+            continue
+
+        nm = re.search(r'(?:मतदाता\s*(?:का)?\s*)?नाम\s*[:ः\-\s]+(.+)', l)
+        if nm and not re.search(r'पिता|पति|माता|अन्य', l) and not name:
+            c = clean_hindi_name(nm.group(1))
+            if c and c != 'मतदाता':
+                name = c
+
+        rm = re.search(r'(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम\s*[:ः\-\s]*(.+)', l)
+        if rm and not rel_name:
+            rel_type = rm.group(1)
+            c = clean_hindi_name(rm.group(2))
+            if c:
+                rel_name = c
+
+        hm = re.search(r'(?:मकान|गृह)\s*(?:संख्या|नंबर|नं|क्रं)?\s*[:ः\-\s]*(.+)', l)
+        if hm and not house:
+            c = clean_house_no(hm.group(1))
+            if c and c not in ['-', '०', ':', '']:
+                house = c
+
+        am = re.search(r'आयु\s*[:ः\-\s]*(\d+)', l)
+        if am and age is None:
+            try:
+                v = int(am.group(1))
+                if 18 <= v <= 125:
+                    age = v
+            except:
+                pass
+
+        gm = re.search(r'लिंग\s*[:ः\-\s]*([^\s\n]+)', l)
+        if gm:
+            g = gm.group(1)
+            if 'स्त्री' in g or 'महिला' in g:
+                gender = 'स्त्री'
+            elif 'पुरुष' in g or 'पुरूष' in g:
+                gender = 'पुरुष'
+
+    if rel_type == 'पति':
+        gender = 'स्त्री'
+
+    return {
+        'name': name,
+        'rel_name': rel_name,
+        'rel_type': rel_type,
+        'house': house,
+        'age': age,
+        'gender': gender,
+        'status': status
+    }
+
 
 
 # =============================================================================
@@ -789,68 +948,88 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             elif 'माता' in card_text_str or 'मरतर' in card_text_str:
                 rel_type = 'माता'
 
-            # 5. Pillar 1: Direct Digital Text Parsing check
+            # 5. Pillar 2 & 3: Multi-Line Full Text Block Extraction (left of photo)
+            text_rect = fitz.Rect(col_x0 + 1.0, card_y0 + 11.0, p_r.x0 - 1.0, card_y1 - 1.0)
+
+            tess_parsed = {
+                'name': '',
+                'rel_name': '',
+                'rel_type': rel_type,
+                'house': '',
+                'age': None,
+                'gender': 'पुरुष',
+                'status': status
+            }
+            img_card = None
+            try:
+                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=text_rect)
+                img_card = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                img_np = np.array(img_card)
+                prep_img = remove_stamps_and_watermarks(img_np, is_hindi=True)
+                tess_raw = pytesseract.image_to_string(prep_img, lang='hin', config='--psm 6')
+                tess_parsed = parse_full_card_tess(tess_raw)
+            except Exception:
+                pass
+
+            # Digital text candidates
             line1_rect = fitz.Rect(col_x0 + 2, card_y0 + 15.5, col_x0 + 106, card_y0 + 29.5)
             line2_rect = fitz.Rect(col_x0 + 2, card_y0 + 27.5, col_x0 + 106, card_y0 + 42.5)
-            
             l1_words = [w[4] for w in page.get_text('words', clip=line1_rect)]
-            l1_digital_candidate = clean_hindi_name(" ".join(l1_words))
-            
+            l1_digital = clean_hindi_name(" ".join(l1_words))
             l2_words = [w[4] for w in page.get_text('words', clip=line2_rect)]
-            l2_digital_candidate, dig_detected_rel = clean_relative_info(" ".join(l2_words))
+            l2_digital, dig_detected_rel = clean_relative_info(" ".join(l2_words))
 
-            # Pillar 2 & 3: Ensemble OCR with Stamp/Watermark Removal (Produces authentic visual Hindi)
-            ocr_name = ""
-            ocr_rel = ""
-            try:
-                pix1 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line1_rect)
-                img1_np = np.array(Image.frombytes('RGB', [pix1.width, pix1.height], pix1.samples))
-                prep1 = remove_stamps_and_watermarks(img1_np, is_hindi=True)
-                ocr_name = ensemble_ocr_line(prep1)
-            except Exception:
-                pass
-
-            try:
-                pix2 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line2_rect)
-                img2_np = np.array(Image.frombytes('RGB', [pix2.width, pix2.height], pix2.samples))
-                prep2 = remove_stamps_and_watermarks(img2_np, is_hindi=True)
-                ocr_l2 = ensemble_ocr_line(prep2)
-                ocr_rel, ocr_det_rel = clean_relative_info(ocr_l2)
-                if ocr_det_rel in ['पति', 'माता']:
-                    rel_type = ocr_det_rel
-            except Exception:
-                pass
-
-            # Prioritize visual OCR since SEC PDFs often contain legacy custom font encoding (e.g. 'हलररलरल' -> 'हीरालाल')
-            name = ocr_name if (ocr_name and len(ocr_name) >= 2) else l1_digital_candidate
-            rel_name = ocr_rel if (ocr_rel and len(ocr_rel) >= 2) else l2_digital_candidate
-            if not ocr_rel and dig_detected_rel in ['पति', 'माता']:
+            name = tess_parsed['name'] or l1_digital
+            rel_name = tess_parsed['rel_name'] or l2_digital
+            if tess_parsed['rel_type'] in ['पति', 'माता']:
+                rel_type = tess_parsed['rel_type']
+            elif dig_detected_rel in ['पति', 'माता']:
                 rel_type = dig_detected_rel
 
-            # Fallbacks for House No and Age
-            if not house_no or house_no == '-':
-                line3_rect = fitz.Rect(col_x0 + 2, card_y0 + 39.0, col_x0 + 106, card_y0 + 53.0)
-                pix3 = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=line3_rect)
-                img3_np = np.array(Image.frombytes('RGB', [pix3.width, pix3.height], pix3.samples))
-                prep3 = remove_stamps_and_watermarks(img3_np, is_hindi=False)
+            if tess_parsed['status'] == 'Deleted':
+                status = 'Deleted'
+
+            # 6. Surya OCR Neural Vision Trigger for Suspicious or Watermarked Cards
+            needs_surya = (
+                not name
+                or not rel_name
+                or len(name) < 2
+                or len(rel_name) < 2
+                or status == 'Deleted'
+                or bool(re.search(r'[0-9«»|“”….,~`!@#$%^&*()_+=\[\]{}]', name + rel_name))
+                or any(w in (name + rel_name) for w in ['ग्जगकु', 'नरम', 'नपतर', 'पनत', 'मरतर'])
+            )
+
+            if needs_surya and img_card is not None:
+                sp = surya_recognize_card(img_card)
+                if sp.get('name') and len(sp['name']) >= 2:
+                    name = sp['name']
+                if sp.get('rel_name') and len(sp['rel_name']) >= 2:
+                    rel_name = sp['rel_name']
+                if sp.get('rel_type') in ['पति', 'माता']:
+                    rel_type = sp['rel_type']
+                if sp.get('status') == 'Deleted':
+                    status = 'Deleted'
+
+            # 7. EasyOCR fallback if still missing
+            if (not name or not rel_name) and img_card is not None:
                 try:
-                    l3 = pytesseract.image_to_string(prep3, lang='hin+eng', config='--psm 7').strip()
-                    house_no = clean_house_no(l3)
+                    prep_card = remove_stamps_and_watermarks(np.array(img_card), is_hindi=True)
+                    easy_text = ensemble_ocr_line(prep_card)
+                    if not name and easy_text:
+                        name = easy_text
                 except Exception:
                     pass
 
-            if not age_raw:
-                line4_rect = fitz.Rect(col_x0 + 2, card_y0 + 51.0, col_x0 + 106, card_y1 - 1.0)
-                pix4 = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=line4_rect)
-                img4_np = np.array(Image.frombytes('RGB', [pix4.width, pix4.height], pix4.samples))
-                prep4 = remove_stamps_and_watermarks(img4_np, is_hindi=False)
-                try:
-                    l4 = pytesseract.image_to_string(prep4, lang='hin+eng', config='--psm 7').strip()
-                    age_raw = l4
-                    if not gender_raw:
-                        gender_raw = l4
-                except Exception:
-                    pass
+            # House No fallback
+            if not house_no or house_no in ['-', '०']:
+                house_no = tess_parsed['house'] or ''
+
+            # Age and Gender fallbacks
+            if not age_raw and tess_parsed['age']:
+                age_raw = str(tess_parsed['age'])
+            if not gender_raw and tess_parsed['gender']:
+                gender_raw = tess_parsed['gender']
 
             # Pillar 6: Cross-Field Logic Validation
             gender, rel_type, age = cross_field_logic_validation(name, rel_type, gender_raw, age_raw)
