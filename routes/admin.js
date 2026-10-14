@@ -558,40 +558,18 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     ).catch(err => console.error('Error adding ward to org:', err));
   }
 
-  const parseRow = (row) => {
-    const cellText = (column) => {
-      const value = row.getCell(column).text || row.getCell(column).value;
-      return value == null ? '' : String(value).trim();
-    };
-    const voter = {
-      epic: cellText(1).toUpperCase(),
-      wardNo: cellText(2) || defaultWardNo,
-      partNo: cellText(3) || defaultBoothNo,
-      serialNo: Number(cellText(4)),
-      nameEn: cellText(5),
-      nameHi: cellText(6),
-      age: Number(cellText(7)) || null,
-      gender: cellText(8),
-      relationType: cellText(9),
-      relativeNameEn: cellText(10),
-      relativeNameHi: cellText(11),
-      houseNo: cellText(12),
-      houseNoHi: cellText(13),
-      mobileNo: cellText(14),
-      caste: cellText(15),
-      familyId: cellText(16),
-      villageName: cellText(17),
-      villageNameHi: cellText(18),
-      organizationId,
-    };
-    if (defaultUploadedBy) {
-      voter.assignedWorker = defaultUploadedBy;
+  const extractCellValue = (cell) => {
+    if (!cell) return '';
+    const val = cell.value;
+    if (val == null) return '';
+    if (typeof val === 'object') {
+      if (val.result !== undefined && val.result !== null) return String(val.result).trim();
+      if (val.text !== undefined && val.text !== null) return String(val.text).trim();
+      if (Array.isArray(val.richText)) {
+        return val.richText.map(t => t.text || '').join('').trim();
+      }
     }
-    if (!voter.epic || !voter.wardNo || !voter.partNo || !Number.isInteger(voter.serialNo)
-      || voter.serialNo < 1 || (!voter.nameEn && !voter.nameHi)) return null;
-    if (!voter.nameHi) voter.nameHi = voter.nameEn;
-    if (!voter.nameEn) voter.nameEn = voter.nameHi;
-    return voter;
+    return String(cell.text || val).trim();
   };
 
   try {
@@ -600,10 +578,127 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     const worksheet = workbook.worksheets[0];
     if (!worksheet) return res.status(400).json({ message: 'The uploaded Excel file has no worksheets.' });
 
+    // Dynamic Header Detection
+    const headerRow = worksheet.getRow(1);
+    const colMap = {};
+    const isHi = (str) => str.includes('hindi') || str.includes('hin') || str.includes('हिंदी') || str.includes('हिन्दी');
+    const isEn = (str) => str.includes('english') || str.includes('eng') || str.includes('(en)') || str.endsWith('en');
+
+    headerRow.eachCell((cell, colNumber) => {
+      const rawText = extractCellValue(cell);
+      const h = rawText.toLowerCase().replace(/[\s\-_()\/.,]/g, '');
+      if (/^(क्रमांक|serial|srno|sno|serialno|अनुक्रमांक)$/i.test(h) || h.startsWith('serial') || h.startsWith('क्रमांक')) {
+        if (!colMap.serialNo) colMap.serialNo = colNumber;
+      } else if (/^(पहचान|पहचानपत्र|epic|epicno|voterid|पहचानपत्रepicno)$/i.test(h) || h.includes('epic') || h.startsWith('पहचान')) {
+        if (!colMap.epic) colMap.epic = colNumber;
+      } else if (h.includes('नाम') || h.includes('name')) {
+        if (h.includes('संबंधी') || h.includes('पिता') || h.includes('पति') || h.includes('relative') || h.includes('father') || h.includes('husband')) {
+          if (isEn(h)) {
+            colMap.relativeNameEn = colNumber;
+          } else {
+            colMap.relativeNameHi = colNumber;
+          }
+        } else if (isEn(h)) {
+          colMap.nameEn = colNumber;
+        } else {
+          colMap.nameHi = colNumber;
+        }
+      } else if (/^(संबंध|सम्बन्ध|संबंधप्रकार|relation|relationtype|रिश्ता)$/i.test(h) || h.startsWith('संबंध') || h.startsWith('relation')) {
+        colMap.relationType = colNumber;
+      } else if (/^(मकान|मकानसंख्या|गृहसंख्या|houseno|house|मकाननं)$/i.test(h) || h.startsWith('house') || h.startsWith('मकान')) {
+        if (isHi(h)) {
+          colMap.houseNoHi = colNumber;
+        } else {
+          if (!colMap.houseNo) colMap.houseNo = colNumber;
+        }
+      } else if (/^(आयु|age|उम्र|voterage)$/i.test(h)) {
+        colMap.age = colNumber;
+      } else if (/^(लिंग|gender|sex|जेंडर)$/i.test(h)) {
+        colMap.gender = colNumber;
+      } else if (/^(वार्ड|ward|wardno|वार्डसंख्या)$/i.test(h) || h.startsWith('ward') || h.startsWith('वार्ड')) {
+        colMap.wardNo = colNumber;
+      } else if (/^(बूथ|भाग|part|booth|partno|boothno|भागसंख्या|बूथसंख्या)$/i.test(h) || h.startsWith('part') || h.startsWith('booth') || h.includes('भागसंख्या')) {
+        colMap.partNo = colNumber;
+      } else if (/^(मोबाइल|mobile|phone|contact|phoneno|mobileno)$/i.test(h)) {
+        colMap.mobileNo = colNumber;
+      } else if (/^(जाति|caste|वर्ग)$/i.test(h)) {
+        colMap.caste = colNumber;
+      } else if (/^(परिवार|परिवारआईडी|familyid|family)$/i.test(h) || h.startsWith('family')) {
+        colMap.familyId = colNumber;
+      } else if (/^(गाँव|गांव|village|villagename|ग्राम)$/i.test(h) || h.startsWith('village') || h.startsWith('गांव') || h.startsWith('गाँव')) {
+        if (isHi(h)) {
+          colMap.villageNameHi = colNumber;
+        } else {
+          if (!colMap.villageName) colMap.villageName = colNumber;
+        }
+      }
+    });
+
+    const isMapped = Boolean(colMap.epic || colMap.nameHi || colMap.serialNo);
+    const getVal = (row, colKey, fallbackIndex) => {
+      const colIdx = isMapped && colMap[colKey] ? colMap[colKey] : fallbackIndex;
+      if (!colIdx) return '';
+      return extractCellValue(row.getCell(colIdx));
+    };
+
+    const parseRow = (row, rowNumber) => {
+      const cellText = (colKey, fallbackIdx) => getVal(row, colKey, fallbackIdx);
+      
+      const rawSerial = cellText('serialNo', 4);
+      let serialNo = parseInt(rawSerial, 10);
+      if (isNaN(serialNo) || serialNo < 1) {
+        serialNo = rowNumber - 1;
+      }
+
+      let epic = cellText('epic', 1).toUpperCase().replace(/[\s\u200B\uFEFF]/g, '');
+      const nameEn = cellText('nameEn', 5);
+      let nameHi = cellText('nameHi', 6);
+      if (!nameHi && nameEn) nameHi = nameEn;
+
+      if (!nameHi || nameHi.length < 2) return null;
+      if (!epic || epic.length < 3) {
+        epic = `VOTER_${serialNo}`;
+      }
+
+      const rawAge = parseInt(cellText('age', 7), 10);
+      const age = (!isNaN(rawAge) && rawAge >= 18 && rawAge <= 125) ? rawAge : null;
+
+      let gender = cellText('gender', 8);
+      if (['m', 'male', 'पुरुष'].includes(gender.toLowerCase())) gender = 'पुरुष';
+      else if (['f', 'female', 'स्त्री', 'महिला'].includes(gender.toLowerCase())) gender = 'स्त्री';
+      else gender = gender || 'अन्य';
+
+      const voter = {
+        epic,
+        wardNo: cellText('wardNo', 2) || defaultWardNo || '1',
+        partNo: cellText('partNo', 3) || defaultBoothNo || '1',
+        serialNo,
+        nameEn: nameEn || nameHi,
+        nameHi,
+        age,
+        gender,
+        relationType: cellText('relationType', 9) || 'पिता',
+        relativeNameEn: cellText('relativeNameEn', 10),
+        relativeNameHi: cellText('relativeNameHi', 11),
+        houseNo: cellText('houseNo', 12) || '',
+        houseNoHi: cellText('houseNoHi', 13) || '',
+        mobileNo: cellText('mobileNo', 14) || '',
+        caste: cellText('caste', 15) || '',
+        familyId: cellText('familyId', 16) || '',
+        villageName: cellText('villageName', 17) || '',
+        villageNameHi: cellText('villageNameHi', 18) || '',
+        organizationId,
+      };
+      if (defaultUploadedBy) {
+        voter.assignedWorker = defaultUploadedBy;
+      }
+      return voter;
+    };
+
     const batch = [];
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber === 1) return;
-      const voter = parseRow(row);
+      const voter = parseRow(row, rowNumber);
       if (voter) batch.push(voter);
     });
 

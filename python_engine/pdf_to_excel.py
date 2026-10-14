@@ -202,7 +202,7 @@ def surya_recognize_card(card_img: Image.Image) -> Dict[str, Any]:
 
 
 def parse_full_card_tess(text: str) -> Dict[str, Any]:
-    """Parses a multi-line OCR text block of a single voter card"""
+    """Parses a multi-line OCR text block of a single voter card with high resilience"""
     name, rel_name, rel_type = "", "", "पिता"
     house, age, gender, status = "", None, "पुरुष", "Active"
 
@@ -215,25 +215,30 @@ def parse_full_card_tess(text: str) -> Dict[str, Any]:
             continue
 
         nm = re.search(r'(?:मतदाता\s*(?:का)?\s*)?नाम\s*[:ः\-\s]+(.+)', l)
-        if nm and not re.search(r'पिता|पति|माता|अन्य', l) and not name:
+        if nm and not re.search(r'पिता|पति|माता|अन्य|पनत|नपतर', l) and not name:
             c = clean_hindi_name(nm.group(1))
             if c and c != 'मतदाता':
                 name = c
 
-        rm = re.search(r'(पिता|पति|माता|अन्य)\s*(?:का)?\s*नाम\s*[:ः\-\s]*(.+)', l)
+        rm = re.search(r'(पिता|पति|माता|अन्य|पनत|नपतर)\s*(?:का)?\s*नाम\s*[:ः\-\s]*(.+)', l)
         if rm and not rel_name:
-            rel_type = rm.group(1)
+            rt = rm.group(1)
+            if rt == 'पनत':
+                rt = 'पति'
+            elif rt == 'नपतर':
+                rt = 'पिता'
+            rel_type = rt
             c = clean_hindi_name(rm.group(2))
             if c:
                 rel_name = c
 
-        hm = re.search(r'(?:मकान|गृह)\s*(?:संख्या|नंबर|नं|क्रं)?\s*[:ः\-\s]*(.+)', l)
+        hm = re.search(r'(?:मकान|गृह|मकारन)\s*(?:संख्या|नंबर|नं|क्रं|सपखजर)?\s*[:ः\-\s]*(.+)', l)
         if hm and not house:
             c = clean_house_no(hm.group(1))
             if c and c not in ['-', '०', ':', '']:
                 house = c
 
-        am = re.search(r'आयु\s*[:ः\-\s]*(\d+)', l)
+        am = re.search(r'(?:आयु|आयू|आजच|आय|उम्र)\s*[:ः\-\s]*(\d+)', l)
         if am and age is None:
             try:
                 v = int(am.group(1))
@@ -242,12 +247,12 @@ def parse_full_card_tess(text: str) -> Dict[str, Any]:
             except:
                 pass
 
-        gm = re.search(r'लिंग\s*[:ः\-\s]*([^\s\n]+)', l)
+        gm = re.search(r'(?:लिंग|सलग|जेंडर|Sex)\s*[:ः\-\s]*([^\s\n]+)', l)
         if gm:
             g = gm.group(1)
-            if 'स्त्री' in g or 'महिला' in g:
+            if any(k in g for k in ['स्त्री', 'महिला', 'सल', 'स्री']):
                 gender = 'स्त्री'
-            elif 'पुरुष' in g or 'पुरूष' in g:
+            elif any(k in g for k in ['पुरुष', 'पुरूष', 'प']):
                 gender = 'पुरुष'
 
     if rel_type == 'पति':
@@ -874,17 +879,51 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
     photo_rects = page.search_for('Photo is')
     if not photo_rects:
         photo_rects = page.search_for('Available')
+    if not photo_rects:
+        # Check embedded image rects (e.g. State Election Commission WithPhoto PDFs)
+        try:
+            for img_info in page.get_images():
+                for r in page.get_image_rects(img_info[0]):
+                    if 20 < r.width < 90 and 30 < r.height < 110:
+                        photo_rects.append(r)
+        except Exception:
+            pass
+
+    # If still no photo rects, try finding EPIC anchors from words
+    if not photo_rects:
+        try:
+            words = page.get_text('words')
+            for w in words:
+                txt = w[4].strip()
+                if EPIC_PATTERN.search(txt):
+                    photo_rects.append(fitz.Rect(min(page_width - 40, w[0] + 90.0), w[1] + 10.0, min(page_width - 5, w[0] + 135.0), w[1] + 65.0))
+        except Exception:
+            pass
 
     page_cards = []
 
     if photo_rects:
         photo_rects.sort(key=lambda r: (round(r.y0 / 50.0) * 50, r.x0))
 
+        # De-duplicate overlapping anchors
+        unique_rects = []
+        for r in photo_rects:
+            if not any(abs(r.x0 - u.x0) < 20 and abs(r.y0 - u.y0) < 20 for u in unique_rects):
+                unique_rects.append(r)
+        photo_rects = unique_rects
+
         for idx, p_r in enumerate(photo_rects):
-            col_x0 = max(0.0, p_r.x0 - 113.0)
-            col_x1 = min(page_width, p_r.x0 + 61.0)
-            card_y0 = max(0.0, p_r.y0 - 15.0)
-            card_y1 = min(page_height, card_y0 + 72.35)
+            is_embedded_image = p_r.height > 25
+            if is_embedded_image:
+                col_x0 = max(0.0, p_r.x0 - 128.0)
+                col_x1 = min(page_width, p_r.x1 + 6.0)
+                card_y0 = max(0.0, p_r.y0 - 15.0)
+                card_y1 = min(page_height, p_r.y1 + 18.0)
+            else:
+                col_x0 = max(0.0, p_r.x0 - 113.0)
+                col_x1 = min(page_width, p_r.x0 + 61.0)
+                card_y0 = max(0.0, p_r.y0 - 15.0)
+                card_y1 = min(page_height, card_y0 + 72.35)
             card_rect = fitz.Rect(col_x0, card_y0, col_x1, card_y1)
 
             # Digital words stream
@@ -962,12 +1001,17 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             }
             img_card = None
             try:
-                pix = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=text_rect)
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), clip=text_rect)
                 img_card = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
                 img_np = np.array(img_card)
                 prep_img = remove_stamps_and_watermarks(img_np, is_hindi=True)
                 tess_raw = pytesseract.image_to_string(prep_img, lang='hin', config='--psm 6')
                 tess_parsed = parse_full_card_tess(tess_raw)
+                if not tess_parsed.get('name') or len(tess_parsed.get('name', '')) < 2:
+                    tess_raw_raw = pytesseract.image_to_string(img_np, lang='hin+eng', config='--psm 6')
+                    raw_parsed = parse_full_card_tess(tess_raw_raw)
+                    if raw_parsed.get('name') and len(raw_parsed['name']) >= 2:
+                        tess_parsed = raw_parsed
             except Exception:
                 pass
 
@@ -979,8 +1023,9 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             l2_words = [w[4] for w in page.get_text('words', clip=line2_rect)]
             l2_digital, dig_detected_rel = clean_relative_info(" ".join(l2_words))
 
-            name = tess_parsed['name'] or l1_digital
-            rel_name = tess_parsed['rel_name'] or l2_digital
+            # Prioritize authentic OCR name over potentially corrupted digital font
+            name = tess_parsed['name'] if (tess_parsed['name'] and len(tess_parsed['name']) >= 2) else l1_digital
+            rel_name = tess_parsed['rel_name'] if (tess_parsed['rel_name'] and len(tess_parsed['rel_name']) >= 2) else l2_digital
             if tess_parsed['rel_type'] in ['पति', 'माता']:
                 rel_type = tess_parsed['rel_type']
             elif dig_detected_rel in ['पति', 'माता']:
@@ -1078,47 +1123,37 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
             for c_idx, (col_x0, col_x1) in enumerate(cols):
                 card_y0 = content_top + (r * row_h)
                 card_y1 = card_y0 + row_h
-
-                line1_rect = fitz.Rect(col_x0 + 2, card_y0 + 15.0, col_x0 + 106, card_y0 + 30.0)
-                pix1 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line1_rect)
-                img1_np = np.array(Image.frombytes("RGB", [pix1.width, pix1.height], pix1.samples))
-                prep1 = remove_stamps_and_watermarks(img1_np, is_hindi=True)
-                name = ensemble_ocr_line(prep1)
-
-                line2_rect = fitz.Rect(col_x0 + 2, card_y0 + 28.0, col_x0 + 106, card_y0 + 43.0)
-                pix2 = page.get_pixmap(matrix=fitz.Matrix(3.5, 3.5), clip=line2_rect)
-                img2_np = np.array(Image.frombytes("RGB", [pix2.width, pix2.height], pix2.samples))
-                prep2 = remove_stamps_and_watermarks(img2_np, is_hindi=True)
-                l2_text = ensemble_ocr_line(prep2)
-                rel_name, rel_type = clean_relative_info(l2_text)
-
-                epic_rect = fitz.Rect(col_x0 + (col_x1 - col_x0) * 0.35, card_y0 + 1.0, col_x1 - 2.0, card_y0 + 16.0)
-                pix_epic = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=epic_rect)
-                img_epic_np = np.array(Image.frombytes("RGB", [pix_epic.width, pix_epic.height], pix_epic.samples))
-                prep_epic = remove_stamps_and_watermarks(img_epic_np, is_hindi=False)
-                card_epic = ""
+                full_card_rect = fitz.Rect(col_x0, card_y0, col_x1, card_y1)
+                
                 try:
-                    ep_text = pytesseract.image_to_string(prep_epic, lang='eng', config='--psm 7').strip()
-                    m_ep = EPIC_PATTERN.search(ep_text)
-                    if m_ep:
-                        card_epic = auto_correct_epic(m_ep.group(0))
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), clip=full_card_rect)
+                    img_np = np.array(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
+                    tess_raw = pytesseract.image_to_string(img_np, lang='hin+eng', config='--psm 6')
+                    parsed = parse_full_card_tess(tess_raw)
+                    
+                    card_epic = ""
+                    ep_m = EPIC_PATTERN.search(tess_raw)
+                    if ep_m:
+                        card_epic = auto_correct_epic(ep_m.group(0))
+                    
+                    gender, rel_type, age = cross_field_logic_validation(
+                        parsed['name'], parsed['rel_type'], parsed['gender'], str(parsed['age'] or '')
+                    )
+                    
+                    if parsed['name'] and parsed['name'] != "मतदाता" and len(parsed['name']) >= 2:
+                        page_cards.append({
+                            "serialNo": None,
+                            "epic": card_epic,
+                            "nameHi": parsed['name'],
+                            "relativeNameHi": parsed['rel_name'],
+                            "relationType": rel_type,
+                            "houseNo": parsed['house'] or "-",
+                            "age": age,
+                            "gender": gender,
+                            "status": parsed['status']
+                        })
                 except Exception:
                     pass
-
-                gender, rel_type, _ = cross_field_logic_validation(name, rel_type, '', None)
-
-                if name and name != "मतदाता" and len(name) >= 2:
-                    page_cards.append({
-                        "serialNo": None,
-                        "epic": card_epic,
-                        "nameHi": name,
-                        "relativeNameHi": rel_name,
-                        "relationType": rel_type,
-                        "houseNo": "-",
-                        "age": None,
-                        "gender": gender,
-                        "status": "Active"
-                    })
 
     doc.close()
     return p_idx, page_cards, page_epics

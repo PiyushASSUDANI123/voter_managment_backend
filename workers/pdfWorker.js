@@ -101,13 +101,15 @@ const ExcelJS = require('exceljs');
             finalVoterList.push({
               serialNo: serialVal || (finalVoterList.length + 1),
               epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
-              nameHi: cleanName,
-              relativeNameHi: cleanRel.length >= 2 ? cleanRel : '',
+              nameHi: cleanName || rawName,
+              relativeNameHi: cleanRel.length >= 2 ? cleanRel : String(values[4] || '').trim(),
               relationType: relType,
-              houseNo: cleanH,
+              houseNo: cleanH || String(values[6] || '').trim(),
               age: ageVal,
               gender: genderVal,
-              status: String(values[9] || 'Active').trim()
+              status: String(values[9] || 'Active').trim(),
+              wardNo: String(values[10] || wardNo || defaultWardNo || '1').trim(),
+              partNo: String(values[11] || boothNo || defaultPartNo || '1').trim()
             });
           }
         });
