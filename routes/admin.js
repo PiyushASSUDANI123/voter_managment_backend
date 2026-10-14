@@ -15,6 +15,54 @@ const availableModules = ['voters', 'poll-desk', 'turnout', 'warroom', 'history'
 const allModules = [...availableModules, 'accounts'];
 const workbookType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
+function levenshtein(s1, s2) {
+  if (s1.length < s2.length) return levenshtein(s2, s1);
+  if (s2.length === 0) return s1.length;
+  let prev = Array.from({ length: s2.length + 1 }, (_, i) => i);
+  for (let i = 0; i < s1.length; i++) {
+    const curr = [i + 1];
+    for (let j = 0; j < s2.length; j++) {
+      const ins = prev[j + 1] + 1;
+      const del = curr[j] + 1;
+      const sub = prev[j] + (s1[i] === s2[j] ? 0 : 1);
+      curr.push(Math.min(ins, del, sub));
+    }
+    prev = curr;
+  }
+  return prev[s2.length];
+}
+
+function stripNameFromRelative(voterName, relName) {
+  if (!voterName || !relName) return relName || '';
+  let vn = String(voterName).trim();
+  let rn = String(relName).trim();
+  if (!rn || !vn) return rn;
+
+  if (rn.startsWith(vn)) {
+    rn = rn.slice(vn.length).trim();
+  }
+
+  const vnTokens = vn.split(/\s+/).filter(Boolean);
+  for (const tok of vnTokens) {
+    if (tok.length >= 2 && rn.startsWith(tok)) {
+      rn = rn.slice(tok.length).trim();
+    }
+  }
+
+  const rnTokens = rn.split(/\s+/).filter(Boolean);
+  if (rnTokens.length > 1 && vnTokens.length > 0) {
+    const firstR = rnTokens[0];
+    const firstV = vnTokens[0];
+    if (firstR.length >= 2) {
+      if (firstR.includes(firstV) || firstV.includes(firstR) || levenshtein(firstR, firstV) <= 2) {
+        rn = rnTokens.slice(1).join(' ').trim();
+      }
+    }
+  }
+
+  return rn;
+}
+
 router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
   try {
     const orgs = await Organization.find({ _id: { $ne: 'org_default' } }).sort({ createdAt: -1 }).lean();
@@ -679,7 +727,7 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
         gender,
         relationType: cellText('relationType', 9) || 'पिता',
         relativeNameEn: cellText('relativeNameEn', 10),
-        relativeNameHi: cellText('relativeNameHi', 11),
+        relativeNameHi: stripNameFromRelative(nameHi, cellText('relativeNameHi', 11)),
         houseNo: cellText('houseNo', 12) || '',
         houseNoHi: cellText('houseNoHi', 13) || '',
         mobileNo: cellText('mobileNo', 14) || '',

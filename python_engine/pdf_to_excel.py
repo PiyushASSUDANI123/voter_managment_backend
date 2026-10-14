@@ -258,6 +258,9 @@ def parse_full_card_tess(text: str) -> Dict[str, Any]:
     if rel_type == 'पति':
         gender = 'स्त्री'
 
+    if name and rel_name:
+        rel_name = strip_name_from_relative(name, rel_name)
+
     return {
         'name': name,
         'rel_name': rel_name,
@@ -346,6 +349,41 @@ def levenshtein_dist(s1: str, s2: str) -> int:
             curr.append(min(ins, delete, subs))
         prev = curr
     return prev[-1]
+
+
+def strip_name_from_relative(voter_name: str, rel_name: str) -> str:
+    """
+    Prevents voter name from repeating inside father/husband relative name.
+    Handles exact match, token prefix match, and fuzzy 1-2 char OCR typo variants.
+    """
+    if not voter_name or not rel_name:
+        return rel_name or ""
+    vn = voter_name.strip()
+    rn = rel_name.strip()
+    if not rn or not vn:
+        return rn
+    
+    # 1. Exact prefix match (e.g. voter="नगराम", rel="नगराम नखतराम" -> "नखतराम")
+    if rn.startswith(vn):
+        rn = rn[len(vn):].strip()
+        
+    # 2. Token prefix match (e.g. voter="राधा कुमारी", rel="राधा कुमारी पदमा राम" -> "पदमा राम")
+    vn_tokens = vn.split()
+    for tok in vn_tokens:
+        if len(tok) >= 2 and rn.startswith(tok):
+            rn = rn[len(tok):].strip()
+            
+    # 3. Fuzzy first-word match (e.g. voter="गंगा", relative="गगा रासुदेव" -> strip "गगा")
+    # or voter="रासुदेव", relative="रासुदा नखतराम" -> strip "रासुदा"
+    rn_tokens = rn.split()
+    if len(rn_tokens) > 1 and len(vn_tokens) > 0:
+        first_r = rn_tokens[0]
+        first_v = vn_tokens[0]
+        if len(first_r) >= 2:
+            if first_r in vn or vn in first_r or levenshtein_dist(first_r, first_v) <= 2:
+                rn = " ".join(rn_tokens[1:]).strip()
+
+    return rn
 
 
 def fuzzy_lexicon_correct(name: str) -> str:
@@ -824,10 +862,216 @@ def ensemble_ocr_line(preprocessed_img: np.ndarray) -> str:
 
 
 # =============================================================================
+# PILLAR 9 & 10: UNIVERSAL INDIAN NAME TRANSLITERATOR & DYNAMIC SECTION TRACKING
+# =============================================================================
+
+COMMON_INDIAN_NAME_TRANSLATIONS = {
+    'गंगा': 'Ganga', 'वासुदेव': 'Vasudev', 'नगाराम': 'Naga Ram', 'नखताराम': 'Nakhta Ram',
+    'सुआ': 'Sua', 'पूनाराम': 'Poona Ram', 'निजरों': 'Nijro', 'पदमाराम': 'Padma Ram',
+    'ओम प्रकाश': 'Om Prakash', 'मुकेश': 'Mukesh', 'राधा कुमारी': 'Radha Kumari',
+    'कालूराम': 'Kalu Ram', 'छगन': 'Chhagan', 'छगनी': 'Chhagani', 'लीलाधर': 'Leeladhar',
+    'तारों देवी': 'Taro Devi', 'भंवरूराम': 'Bhanwroo Ram', 'लीला': 'Leela',
+    'पुरखाराम': 'Purkha Ram', 'मुढमा': 'Mudhma', 'गुमानाराम': 'Gumana Ram',
+    'राधा': 'Radha', 'राणाराम': 'Rana Ram', 'पदमा राम': 'Padma Ram', 'नखता राम': 'Nakhta Ram',
+    'अशोक कुमार': 'Ashok Kumar', 'चम्पाराम': 'Champa Ram', 'पदम्': 'Padam', 'बेरिशाल': 'Berishal',
+    'राम': 'Ram', 'श्याम': 'Shyam', 'सीता': 'Sita', 'गीता': 'Geeta', 'रमेश': 'Ramesh',
+    'सुरेश': 'Suresh', 'महेश': 'Mahesh', 'दिनेश': 'Dinesh', 'कमलेश': 'Kamlesh',
+    'राजेश': 'Rajesh', 'राकेश': 'Rakesh', 'सुनील': 'Sunil', 'अनिल': 'Anil',
+    'मनोज': 'Manoj', 'संजय': 'Sanjay', 'विजय': 'Vijay', 'अजय': 'Ajay',
+    'देवी': 'Devi', 'बाई': 'Bai', 'कंवर': 'Kanwar', 'सिंह': 'Singh', 'लाल': 'Lal',
+    'कुमार': 'Kumar', 'कुमारी': 'Kumari', 'प्रसाद': 'Prasad', 'प्रकाश': 'Prakash',
+    'चन्द': 'Chand', 'चंद': 'Chand', 'नाथ': 'Nath', 'दास': 'Das', 'शंकर': 'Shanker',
+    'पवन': 'Pavan', 'किशन': 'Kishan', 'गोपाल': 'Gopal', 'मोहन': 'Mohan', 'सोहन': 'Sohan',
+    'शान्ति': 'Shanti', 'शान्ती': 'Shanti', 'कमला': 'Kamla', 'विमला': 'Vimla', 'निर्मला': 'Nirmala',
+    'मंजू': 'Manju', 'सुनीता': 'Sunita', 'अनीता': 'Anita', 'पूजा': 'Pooja', 'आरती': 'Aarti',
+    'संतोष': 'Santosh', 'रेखा': 'Rekha', 'सुमन': 'Suman', 'कविता': 'Kavita', 'अनिता': 'Anita'
+}
+
+DEV_VOWELS = {
+    'अ': 'A', 'आ': 'Aa', 'इ': 'I', 'ई': 'Ee', 'उ': 'U', 'ऊ': 'Oo',
+    'ऋ': 'Ri', 'ए': 'E', 'ऐ': 'Ai', 'ओ': 'O', 'औ': 'Au',
+    'अं': 'An', 'अः': 'Ah'
+}
+
+DEV_MATRAS = {
+    'ा': 'a', 'ि': 'i', 'ी': 'ee', 'ु': 'u', 'ू': 'oo',
+    'ृ': 'ri', 'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au',
+    'ं': 'n', 'ँ': 'n', 'ः': 'h', 'ॅ': 'e', 'ॉ': 'o'
+}
+
+DEV_CONSONANTS = {
+    'क': 'k', 'ख': 'kh', 'ग': 'g', 'घ': 'gh', 'ङ': 'ng',
+    'च': 'ch', 'छ': 'chh', 'ज': 'j', 'झ': 'jh', 'ञ': 'ny',
+    'ट': 't', 'ठ': 'th', 'ड': 'd', 'ढ': 'dh', 'ण': 'n',
+    'त': 't', 'थ': 'th', 'द': 'd', 'ध': 'dh', 'न': 'n',
+    'प': 'p', 'फ': 'ph', 'ब': 'b', 'भ': 'bh', 'म': 'm',
+    'य': 'y', 'र': 'r', 'ल': 'l', 'व': 'v', 'श': 'sh',
+    'ष': 'sh', 'स': 's', 'ह': 'h',
+    'क्ष': 'ksh', 'त्र': 'tr', 'ज्ञ': 'gya', 'श्र': 'shr',
+    'क़': 'q', 'ख़': 'kh', 'ग़': 'gh', 'ज़': 'z', 'ड़': 'r',
+    'ढ़': 'rh', 'फ़': 'f'
+}
+
+COMPOUND_NAME_SUFFIXES = [
+    ('राम', ' Ram'), ('लाल', ' Lal'), ('कुमार', ' Kumar'), ('कुमारी', ' Kumari'),
+    ('सिंह', ' Singh'), ('कंवर', ' Kanwar'), ('देवी', ' Devi'), ('बाई', ' Bai'),
+    ('प्रसाद', ' Prasad'), ('प्रकाश', ' Prakash'), ('चंद', ' Chand'), ('चन्द', ' Chand'),
+    ('नाथ', ' Nath'), ('दास', ' Das'), ('शंकर', ' Shanker'), ('चन्द्र', ' Chandra')
+]
+
+def transliterate_token(token: str) -> str:
+    if not token:
+        return ""
+    if token in COMMON_INDIAN_NAME_TRANSLATIONS:
+        return COMMON_INDIAN_NAME_TRANSLATIONS[token]
+        
+    chars = list(token)
+    n = len(chars)
+    res = []
+    i = 0
+    while i < n:
+        c = chars[i]
+        if i + 1 < n and chars[i+1] == '़':
+            c = c + '़'
+            i += 1
+            
+        if c in DEV_VOWELS:
+            res.append(DEV_VOWELS[c].lower() if res else DEV_VOWELS[c])
+        elif c in DEV_CONSONANTS:
+            base = DEV_CONSONANTS[c]
+            if i + 1 < n and chars[i+1] == '्':
+                res.append(base)
+                i += 1
+            elif i + 1 < n and chars[i+1] in DEV_MATRAS:
+                res.append(base)
+                matra = chars[i+1]
+                if matra in ('ं', 'ँ'):
+                    res.append('an')
+                else:
+                    res.append(DEV_MATRAS[matra])
+                i += 1
+            elif i + 1 < n and chars[i+1] in DEV_CONSONANTS:
+                res.append(base + 'a')
+            elif i == n - 1:
+                res.append(base)
+            else:
+                res.append(base + 'a')
+        elif c in DEV_MATRAS:
+            res.append(DEV_MATRAS[c])
+        else:
+            res.append(c)
+        i += 1
+        
+    s = ''.join(res)
+    return s.capitalize()
+
+def transliterate_hindi(text: str) -> str:
+    if not text:
+        return ""
+    t_clean = text.strip()
+    if t_clean in COMMON_INDIAN_NAME_TRANSLATIONS:
+        return COMMON_INDIAN_NAME_TRANSLATIONS[t_clean]
+
+    for sfx_hi, sfx_en in COMPOUND_NAME_SUFFIXES:
+        if t_clean.endswith(sfx_hi) and len(t_clean) > len(sfx_hi):
+            prefix = t_clean[:-len(sfx_hi)].strip()
+            return f"{transliterate_hindi(prefix)}{sfx_en}"
+
+    tokens = re.split(r'(\s+|,|\.|\-)', t_clean)
+    out = []
+    for tok in tokens:
+        if not tok or re.match(r'^\s+$', tok) or tok in (',', '.', '-'):
+            out.append(tok)
+        else:
+            out.append(transliterate_token(tok))
+    res = ''.join(out)
+    return re.sub(r'\s+', ' ', res).strip()
+
+KNOWN_SECTION_TRANSLATIONS = {
+    'कुम्हारों की ढाणी, मावा': 'Kumharo Ki Dhani, Mawa',
+    'सोहनसिंह की ढाणी, मावा': 'Sohansingh Ki Dhani, Mawa',
+    'सुथारों का बास, रामदेवरा': 'Sutharo Ka Baas, Ramdeora',
+    'नई बस्ती, रामदेवरा': 'Nai Basti, Ramdeora',
+    'प्रजापतों का बास, रामदेवरा': 'Prajapato Ka Baas, Ramdeora',
+    'देशांतरियों का बास, रामदेवरा': 'Deshantariyo Ka Baas, Ramdeora',
+    'देशान्तरो का बास, रामदेवरा': 'Deshantariyo Ka Baas, Ramdeora',
+    'मेघवाल बस्ती, रामदेवरा': 'Meghwal Basti, Ramdeora',
+    'मेघवाल बांद्रा का बास, रामदेवरा': 'Meghwal Bandra Ka Baas, Ramdeora',
+    'मेगवाल बांदरो का बास, रामदेवरा': 'Meghwal Bandra Ka Baas, Ramdeora'
+}
+
+SECTION_KEYWORDS_HINDI = [
+    'ढाणी', 'बास', 'बस्ती', 'टोला', 'टोली', 'मोहल्ला', 'गली', 'वार्ड', 'ग्राम',
+    'मजरा', 'पुरा', 'पट्टी', 'पारा', 'वाडा', 'कालोनी', 'कॉलोनी', 'नगर', 'खण्ड',
+    'सेक्टर', 'अनुभाग', 'मार्ग', 'रोड', 'सड़क'
+]
+
+SECTION_KEYWORDS_CIPHER = [
+    'ढरणल', 'बरस', 'बसतल', 'कचमहररत', 'सचसररत', 'पजरपतत', 'दकशरनतर',
+    'मकगररल', 'मकघररल', 'सयहनलसह'
+]
+
+def extract_page_sections(page: Any, p_idx: int) -> List[Tuple[float, str, str]]:
+    """
+    Extracts all section/mohalla boundaries on the page with vertical y positions.
+    Returns sorted list of (y_pos, sec_hindi, sec_english).
+    """
+    sections = []
+    blocks = page.get_text('blocks')
+    page_h = page.rect.height
+    
+    for b in blocks:
+        if b[1] < 60 or b[3] > page_h - 40:
+            continue
+            
+        txt = b[4].strip().replace('\n', ' ')
+        if len(txt) < 3 or len(txt) > 85:
+            continue
+            
+        if any(k in txt for k in ['आजच', 'मकरन', 'पनत', 'नपतर', 'ललग', 'सपखजर', 'YTN', 'RJ/', 'नाम:', 'आयु:', 'मकान:', 'पिता:', 'पति:']):
+            continue
+            
+        has_sec_hi = any(k in txt for k in SECTION_KEYWORDS_HINDI)
+        has_sec_cip = any(k in txt for k in SECTION_KEYWORDS_CIPHER)
+        
+        if has_sec_hi or has_sec_cip:
+            sec_hi = ""
+            if has_sec_cip or re.search(r'[^\u0900-\u097F\s,.\-]', txt):
+                try:
+                    rect = fitz.Rect(b[0] - 5, b[1] - 5, b[2] + 5, b[3] + 5)
+                    pix = page.get_pixmap(clip=rect, dpi=200)
+                    img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+                    ocr_t = pytesseract.image_to_string(img, lang='hin').strip().replace('\n', ' ')
+                    ocr_t = re.sub(r'^[_\-\s;:,|]+', '', ocr_t)
+                    ocr_t = re.sub(r'[_\-\s;:,|]+$', '', ocr_t)
+                    if len(ocr_t) >= 4:
+                        sec_hi = ocr_t
+                except Exception:
+                    pass
+            
+            if not sec_hi:
+                sec_hi = clean_hindi_name(txt) or txt
+                
+            sec_en = KNOWN_SECTION_TRANSLATIONS.get(sec_hi)
+            if not sec_en:
+                for k, v in KNOWN_SECTION_TRANSLATIONS.items():
+                    if k in sec_hi or sec_hi in k:
+                        sec_en = v
+                        break
+            if not sec_en:
+                sec_en = transliterate_hindi(sec_hi)
+                
+            sections.append((b[1], sec_hi, sec_en))
+            
+    sections.sort(key=lambda s: s[0])
+    return sections
+
+
+# =============================================================================
 # PILLAR 1 & 4: DIRECT PDF PARSING & DETERMINISTIC GRID SLICING
 # =============================================================================
 
-def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, Any]], List[str]]:
+def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, Any]], List[str], List[Tuple[float, str, str]]]:
     """
     Processes a single electoral roll page implementing:
     - Pillar 1: Direct digital text check before OCR
@@ -835,6 +1079,7 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
     - Pillar 2 & 3: Ensemble OCR with watermark removal
     - Pillar 6: Cross-field logic validation
     - Pillar 7: Universal font encoding auto-conversion
+    - Pillar 9 & 10: Dynamic Section / Mohalla tracking & Bilingual transliteration
     """
     pdf_path, p_idx = args_tuple
     doc = fitz.open(pdf_path)
@@ -869,82 +1114,109 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
 
     if p_idx in (0, 1) and len(page_epics) < 3:
         doc.close()
-        return p_idx, [], []
+        return p_idx, [], [], []
     cover_keywords_uni = ['कलेण्डर', 'अनुभाग विवरण', 'मतदान केंद्र की सूची', 'मतदाताओं की कुल संख्या', 'प्रारूप 20', 'हस्ताक्षर एवं मोहर']
     if any(w in page_text for w in cover_keywords_uni) and len(page_epics) < 3:
         doc.close()
-        return p_idx, [], []
+        return p_idx, [], [], []
 
-    # Pillar 4: Deterministic grid photo boxes
-    photo_rects = page.search_for('Photo is')
-    if not photo_rects:
-        photo_rects = page.search_for('Available')
-    if not photo_rects:
-        # Check embedded image rects (e.g. State Election Commission WithPhoto PDFs)
-        try:
-            for img_info in page.get_images():
-                for r in page.get_image_rects(img_info[0]):
-                    if 20 < r.width < 90 and 30 < r.height < 110:
-                        photo_rects.append(r)
-        except Exception:
-            pass
+    page_sections = extract_page_sections(page, p_idx)
 
-    # If still no photo rects, try finding EPIC anchors from words
-    if not photo_rects:
-        try:
-            words = page.get_text('words')
+    # Multi-Anchor Card Discovery
+    words = page.get_text('words')
+    serial_anchors = []
+    for w in words:
+        txt = w[4].strip()
+        if txt.isdigit() and 130 < w[1] < page_height - 40:
+            val = int(txt)
+            if 1 <= val <= 2500 and any(abs(w[0] - col) < 20.0 for col in [49.1, 222.6, 396.1, 55.0, 229.0, 402.0]):
+                serial_anchors.append((val, w[0], w[1]))
+
+    card_boxes = []
+    if len(serial_anchors) >= 3:
+        seen_s = {}
+        for s in serial_anchors:
+            if s[0] not in seen_s:
+                seen_s[s[0]] = s
+        sorted_serials = sorted(seen_s.values(), key=lambda s: s[0])
+        for val, sx, sy in sorted_serials:
+            col_x0 = max(0.0, sx - 22.0)
+            col_x1 = min(page_width, col_x0 + 175.0)
+            card_y0 = max(0.0, sy - 10.0)
+            card_y1 = min(page_height, card_y0 + 89.0)
+            card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), val, None))
+    else:
+        # Fallback 2: Photo boxes and embedded images
+        photo_rects = page.search_for('Photo is')
+        if not photo_rects:
+            photo_rects = page.search_for('Available')
+        if not photo_rects:
+            try:
+                for img_info in page.get_images():
+                    for r in page.get_image_rects(img_info[0]):
+                        if 20 < r.width < 90 and 30 < r.height < 110:
+                            photo_rects.append(r)
+            except Exception:
+                pass
+        if not photo_rects:
             for w in words:
                 txt = w[4].strip()
                 if EPIC_PATTERN.search(txt):
                     photo_rects.append(fitz.Rect(min(page_width - 40, w[0] + 90.0), w[1] + 10.0, min(page_width - 5, w[0] + 135.0), w[1] + 65.0))
-        except Exception:
-            pass
+
+        if photo_rects:
+            photo_rects.sort(key=lambda r: (round(r.y0 / 50.0) * 50, r.x0))
+            unique_rects = []
+            for r in photo_rects:
+                if not any(abs(r.x0 - u.x0) < 20 and abs(r.y0 - u.y0) < 20 for u in unique_rects):
+                    unique_rects.append(r)
+            for p_r in unique_rects:
+                is_embedded_image = p_r.height > 25
+                if is_embedded_image:
+                    col_x0 = max(0.0, p_r.x0 - 128.0)
+                    col_x1 = min(page_width, p_r.x1 + 6.0)
+                    card_y0 = max(0.0, p_r.y0 - 15.0)
+                    card_y1 = min(page_height, p_r.y1 + 18.0)
+                else:
+                    col_x0 = max(0.0, p_r.x0 - 113.0)
+                    col_x1 = min(page_width, p_r.x0 + 61.0)
+                    card_y0 = max(0.0, p_r.y0 - 15.0)
+                    card_y1 = min(page_height, card_y0 + 72.35)
+                card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), None, p_r))
 
     page_cards = []
 
-    if photo_rects:
-        photo_rects.sort(key=lambda r: (round(r.y0 / 50.0) * 50, r.x0))
+    for card_rect, preset_serial, p_r in card_boxes:
+        active_sec_hi, active_sec_en = "", ""
+        for sec_y, s_hi, s_en in page_sections:
+            if card_rect.y0 >= sec_y - 20:
+                active_sec_hi, active_sec_en = s_hi, s_en
 
-        # De-duplicate overlapping anchors
-        unique_rects = []
-        for r in photo_rects:
-            if not any(abs(r.x0 - u.x0) < 20 and abs(r.y0 - u.y0) < 20 for u in unique_rects):
-                unique_rects.append(r)
-        photo_rects = unique_rects
+        col_x0 = card_rect.x0
+        col_x1 = card_rect.x1
+        card_y0 = card_rect.y0
+        card_y1 = card_rect.y1
 
-        for idx, p_r in enumerate(photo_rects):
-            is_embedded_image = p_r.height > 25
-            if is_embedded_image:
-                col_x0 = max(0.0, p_r.x0 - 128.0)
-                col_x1 = min(page_width, p_r.x1 + 6.0)
-                card_y0 = max(0.0, p_r.y0 - 15.0)
-                card_y1 = min(page_height, p_r.y1 + 18.0)
-            else:
-                col_x0 = max(0.0, p_r.x0 - 113.0)
-                col_x1 = min(page_width, p_r.x0 + 61.0)
-                card_y0 = max(0.0, p_r.y0 - 15.0)
-                card_y1 = min(page_height, card_y0 + 72.35)
-            card_rect = fitz.Rect(col_x0, card_y0, col_x1, card_y1)
+        # Digital words stream
+        c_words = page.get_text('words', clip=card_rect)
+        words_text = [w[4] for w in c_words]
+        card_text_str = ' '.join(words_text)
+        
+        # Pillar 7: Convert card text if legacy font
+        if is_page_legacy:
+            card_text_str = auto_convert_text(card_text_str, page_font_names)
+            words_text = [auto_convert_text(w, page_font_names) for w in words_text]
 
-            # Digital words stream
-            words = page.get_text('words', clip=card_rect)
-            words_text = [w[4] for w in words]
-            card_text_str = ' '.join(words_text)
-            
-            # Pillar 7: Convert card text if legacy font
-            if is_page_legacy:
-                card_text_str = auto_convert_text(card_text_str, page_font_names)
-                words_text = [auto_convert_text(w, page_font_names) for w in words_text]
+        # 1. EPIC
+        epic_m = EPIC_PATTERN.search(card_text_str)
+        raw_epic = epic_m.group(0) if epic_m else ''
+        extracted_epic = auto_correct_epic(raw_epic)
 
-            # 1. EPIC
-            epic_m = EPIC_PATTERN.search(card_text_str)
-            raw_epic = epic_m.group(0) if epic_m else ''
-            extracted_epic = auto_correct_epic(raw_epic)
-
-            # 2. Serial Number & Status
-            serial_words = [w for w in words if col_x0 - 5.0 <= w[0] < col_x0 + 38.0 and card_y0 - 5.0 <= w[1] < card_y0 + 16.0]
-            card_serial = None
-            status = 'Active'
+        # 2. Serial Number & Status
+        card_serial = preset_serial
+        status = 'Active'
+        if not card_serial:
+            serial_words = [w for w in c_words if col_x0 - 5.0 <= w[0] < col_x0 + 38.0 and card_y0 - 5.0 <= w[1] < card_y0 + 16.0]
             for sw in serial_words:
                 txt = sw[4].strip()
                 if any(txt.startswith(p) for p in ['E', 'S', 'R']):
@@ -954,158 +1226,165 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                     card_serial = int(num_m.group(1))
 
             if not card_serial:
-                br_words = [w for w in words if col_x0 + 90.0 <= w[0] <= col_x0 + 180.0 and card_y0 + 50.0 <= w[1] <= card_y1 + 5.0]
+                br_words = [w for w in c_words if col_x0 + 90.0 <= w[0] <= col_x0 + 180.0 and card_y0 + 50.0 <= w[1] <= card_y1 + 5.0]
                 for brw in br_words:
                     num_m = re.search(r'\b(\d{1,4})\b', brw[4].strip())
                     if num_m:
                         card_serial = int(num_m.group(1))
                         break
 
-            if re.search(r'DELETED|ELETED|विलोपित', card_text_str, re.I):
+        if re.search(r'DELETED|ELETED|विलोपित', card_text_str, re.I):
+            status = 'Deleted'
+
+        # 3. Age, Gender & House No from stream
+        age_raw = None
+        gender_raw = ''
+        house_no = ''
+
+        for i, w in enumerate(words_text):
+            if any(k in w for k in ['आजच', 'आजप', 'आयु', 'आसम']):
+                if i + 1 < len(words_text):
+                    age_raw = words_text[i+1]
+                if i + 2 < len(words_text):
+                    gender_raw = words_text[i+2]
+            if any(k in w for k in ['सपखसर', 'मकरन', 'संख्या', 'मकान']):
+                if i + 1 < len(words_text):
+                    h_str = words_text[i+1].strip()
+                    if h_str and not h_str.startswith('Photo') and not any(h_str.startswith(p) for p in ['XII', 'JCR', 'RJ', 'UP', 'DL', 'MP', 'GJ', 'HR']):
+                        house_no = clean_house_no(h_str)
+
+        # 4. Relation type
+        rel_type = 'पिता'
+        if 'पति' in card_text_str or 'पनत' in card_text_str:
+            rel_type = 'पति'
+        elif 'माता' in card_text_str or 'मरतर' in card_text_str:
+            rel_type = 'माता'
+
+        # 5. Pillar 2 & 3: Multi-Line Full Text Block Extraction (left of photo)
+        photo_boundary_x = p_r.x0 if p_r else (col_x1 - 45.0)
+        text_rect = fitz.Rect(col_x0 + 1.0, card_y0 + 10.0, max(col_x0 + 50.0, photo_boundary_x - 1.0), card_y1 - 1.0)
+
+        tess_parsed = {
+            'name': '',
+            'rel_name': '',
+            'rel_type': rel_type,
+            'house': '',
+            'age': None,
+            'gender': 'पुरुष',
+            'status': status
+        }
+        img_card = None
+        try:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), clip=text_rect)
+            img_card = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
+            img_np = np.array(img_card)
+            prep_img = remove_stamps_and_watermarks(img_np, is_hindi=True)
+            tess_raw = pytesseract.image_to_string(prep_img, lang='hin', config='--psm 6')
+            tess_parsed = parse_full_card_tess(tess_raw)
+            if not tess_parsed.get('name') or len(tess_parsed.get('name', '')) < 2:
+                tess_raw_raw = pytesseract.image_to_string(img_np, lang='hin+eng', config='--psm 6')
+                raw_parsed = parse_full_card_tess(tess_raw_raw)
+                if raw_parsed.get('name') and len(raw_parsed['name']) >= 2:
+                    tess_parsed = raw_parsed
+        except Exception:
+            pass
+
+        # Digital text candidates
+        line1_rect = fitz.Rect(col_x0 + 2, card_y0 + 15.5, col_x0 + 106, card_y0 + 29.5)
+        line2_rect = fitz.Rect(col_x0 + 2, card_y0 + 27.5, col_x0 + 106, card_y0 + 42.5)
+        l1_words = [w[4] for w in page.get_text('words', clip=line1_rect)]
+        l1_digital = clean_hindi_name(" ".join(l1_words))
+        l2_words = [w[4] for w in page.get_text('words', clip=line2_rect)]
+        l2_digital, dig_detected_rel = clean_relative_info(" ".join(l2_words))
+
+        # Prioritize authentic OCR name over potentially corrupted digital font
+        name = tess_parsed['name'] if (tess_parsed['name'] and len(tess_parsed['name']) >= 2) else l1_digital
+        rel_name = tess_parsed['rel_name'] if (tess_parsed['rel_name'] and len(tess_parsed['rel_name']) >= 2) else l2_digital
+        rel_name = strip_name_from_relative(name, rel_name)
+        if tess_parsed['rel_type'] in ['पति', 'माता']:
+            rel_type = tess_parsed['rel_type']
+        elif dig_detected_rel in ['पति', 'माता']:
+            rel_type = dig_detected_rel
+
+        if tess_parsed['status'] == 'Deleted':
+            status = 'Deleted'
+
+        # 6. Surya OCR Neural Vision Trigger (Disabled by default to avoid HuggingFace Hub network blocks)
+        needs_surya = os.environ.get('ENABLE_SURYA', 'false').lower() == 'true' and (
+            not name
+            or not rel_name
+            or len(name) < 2
+            or len(rel_name) < 2
+            or status == 'Deleted'
+            or bool(re.search(r'[0-9«»|“”….,~`!@#$%^&*()_+=\[\]{}]', name + rel_name))
+            or any(w in (name + rel_name) for w in ['ग्जगकु', 'नरम', 'नपतर', 'पनत', 'मरतर'])
+        )
+
+        if needs_surya and img_card is not None:
+            sp = surya_recognize_card(img_card)
+            if sp.get('name') and len(sp['name']) >= 2:
+                name = sp['name']
+            if sp.get('rel_name') and len(sp['rel_name']) >= 2:
+                rel_name = sp['rel_name']
+            if sp.get('rel_type') in ['पति', 'माता']:
+                rel_type = sp['rel_type']
+            if sp.get('status') == 'Deleted':
                 status = 'Deleted'
 
-            # 3. Age, Gender & House No from stream
-            age_raw = None
-            gender_raw = ''
-            house_no = ''
-
-            for i, w in enumerate(words_text):
-                if any(k in w for k in ['आजच', 'आजप', 'आयु']):
-                    if i + 1 < len(words_text):
-                        age_raw = words_text[i+1]
-                    if i + 2 < len(words_text):
-                        gender_raw = words_text[i+2]
-                    if i + 3 < len(words_text):
-                        h_str = words_text[i+3].strip()
-                        if h_str and not h_str.startswith('Photo') and not any(h_str.startswith(p) for p in ['XII', 'JCR', 'RJ', 'UP', 'DL', 'MP', 'GJ', 'HR']):
-                            house_no = clean_house_no(h_str)
-
-            # 4. Relation type
-            rel_type = 'पिता'
-            if 'पति' in card_text_str or 'पनत' in card_text_str:
-                rel_type = 'पति'
-            elif 'माता' in card_text_str or 'मरतर' in card_text_str:
-                rel_type = 'माता'
-
-            # 5. Pillar 2 & 3: Multi-Line Full Text Block Extraction (left of photo)
-            text_rect = fitz.Rect(col_x0 + 1.0, card_y0 + 11.0, p_r.x0 - 1.0, card_y1 - 1.0)
-
-            tess_parsed = {
-                'name': '',
-                'rel_name': '',
-                'rel_type': rel_type,
-                'house': '',
-                'age': None,
-                'gender': 'पुरुष',
-                'status': status
-            }
-            img_card = None
+        # 7. EasyOCR fallback if still missing
+        if (not name or not rel_name) and img_card is not None:
             try:
-                pix = page.get_pixmap(matrix=fitz.Matrix(2.8, 2.8), clip=text_rect)
-                img_card = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
-                img_np = np.array(img_card)
-                prep_img = remove_stamps_and_watermarks(img_np, is_hindi=True)
-                tess_raw = pytesseract.image_to_string(prep_img, lang='hin', config='--psm 6')
-                tess_parsed = parse_full_card_tess(tess_raw)
-                if not tess_parsed.get('name') or len(tess_parsed.get('name', '')) < 2:
-                    tess_raw_raw = pytesseract.image_to_string(img_np, lang='hin+eng', config='--psm 6')
-                    raw_parsed = parse_full_card_tess(tess_raw_raw)
-                    if raw_parsed.get('name') and len(raw_parsed['name']) >= 2:
-                        tess_parsed = raw_parsed
+                prep_card = remove_stamps_and_watermarks(np.array(img_card), is_hindi=True)
+                easy_text = ensemble_ocr_line(prep_card)
+                if not name and easy_text:
+                    name = easy_text
             except Exception:
                 pass
 
-            # Digital text candidates
-            line1_rect = fitz.Rect(col_x0 + 2, card_y0 + 15.5, col_x0 + 106, card_y0 + 29.5)
-            line2_rect = fitz.Rect(col_x0 + 2, card_y0 + 27.5, col_x0 + 106, card_y0 + 42.5)
-            l1_words = [w[4] for w in page.get_text('words', clip=line1_rect)]
-            l1_digital = clean_hindi_name(" ".join(l1_words))
-            l2_words = [w[4] for w in page.get_text('words', clip=line2_rect)]
-            l2_digital, dig_detected_rel = clean_relative_info(" ".join(l2_words))
+        # House No fallback
+        if not house_no or house_no in ['-', '०']:
+            house_no = tess_parsed['house'] or ''
 
-            # Prioritize authentic OCR name over potentially corrupted digital font
-            name = tess_parsed['name'] if (tess_parsed['name'] and len(tess_parsed['name']) >= 2) else l1_digital
-            rel_name = tess_parsed['rel_name'] if (tess_parsed['rel_name'] and len(tess_parsed['rel_name']) >= 2) else l2_digital
-            if tess_parsed['rel_type'] in ['पति', 'माता']:
-                rel_type = tess_parsed['rel_type']
-            elif dig_detected_rel in ['पति', 'माता']:
-                rel_type = dig_detected_rel
+        # Age and Gender fallbacks
+        if not age_raw and tess_parsed['age']:
+            age_raw = str(tess_parsed['age'])
+        if not gender_raw and tess_parsed['gender']:
+            gender_raw = tess_parsed['gender']
 
-            if tess_parsed['status'] == 'Deleted':
-                status = 'Deleted'
+        # Pillar 6: Cross-Field Logic Validation
+        gender, rel_type, age = cross_field_logic_validation(name, rel_type, gender_raw, age_raw)
 
-            # 6. Surya OCR Neural Vision Trigger for Suspicious or Watermarked Cards
-            needs_surya = (
-                not name
-                or not rel_name
-                or len(name) < 2
-                or len(rel_name) < 2
-                or status == 'Deleted'
-                or bool(re.search(r'[0-9«»|“”….,~`!@#$%^&*()_+=\[\]{}]', name + rel_name))
-                or any(w in (name + rel_name) for w in ['ग्जगकु', 'नरम', 'नपतर', 'पनत', 'मरतर'])
-            )
+        card_record = {
+            "serialNo": card_serial,
+            "epic": extracted_epic,
+            "nameHi": name,
+            "nameEn": transliterate_hindi(name),
+            "relativeNameHi": rel_name,
+            "relativeNameEn": transliterate_hindi(rel_name),
+            "relationType": rel_type,
+            "houseNo": house_no,
+            "age": age,
+            "gender": gender,
+            "status": status,
+            "villageName": active_sec_en,
+            "villageNameHi": active_sec_hi
+        }
 
-            if needs_surya and img_card is not None:
-                sp = surya_recognize_card(img_card)
-                if sp.get('name') and len(sp['name']) >= 2:
-                    name = sp['name']
-                if sp.get('rel_name') and len(sp['rel_name']) >= 2:
-                    rel_name = sp['rel_name']
-                if sp.get('rel_type') in ['पति', 'माता']:
-                    rel_type = sp['rel_type']
-                if sp.get('status') == 'Deleted':
-                    status = 'Deleted'
-
-            # 7. EasyOCR fallback if still missing
-            if (not name or not rel_name) and img_card is not None:
-                try:
-                    prep_card = remove_stamps_and_watermarks(np.array(img_card), is_hindi=True)
-                    easy_text = ensemble_ocr_line(prep_card)
-                    if not name and easy_text:
-                        name = easy_text
-                except Exception:
-                    pass
-
-            # House No fallback
-            if not house_no or house_no in ['-', '०']:
-                house_no = tess_parsed['house'] or ''
-
-            # Age and Gender fallbacks
-            if not age_raw and tess_parsed['age']:
-                age_raw = str(tess_parsed['age'])
-            if not gender_raw and tess_parsed['gender']:
-                gender_raw = tess_parsed['gender']
-
-            # Pillar 6: Cross-Field Logic Validation
-            gender, rel_type, age = cross_field_logic_validation(name, rel_type, gender_raw, age_raw)
-
-            card_record = {
-                "serialNo": card_serial,
-                "epic": extracted_epic,
-                "nameHi": name,
-                "relativeNameHi": rel_name,
-                "relationType": rel_type,
-                "houseNo": house_no,
-                "age": age,
-                "gender": gender,
-                "status": status
-            }
-
-            # PILLAR 8: Groq AI Fallback first, then OpenRouter (ONLY IF DATA IS MISSING OR CORRUPTED)
+        # PILLAR 8: Groq AI Fallback first, then OpenRouter (ONLY IF DATA IS MISSING OR CORRUPTED AND ENABLED)
+        if os.environ.get('ENABLE_AI_FALLBACK', 'false').lower() == 'true' and needs_ai_repair(card_record):
+            try:
+                ocr_context = f"Voter Name: {name}\nRelative: {rel_name}\nRelation: {rel_type}\nCard Raw Text: {card_text_str}"
+                card_record = repair_single_voter_card_groq(ocr_context, card_record)
+            except Exception:
+                pass
             if needs_ai_repair(card_record):
                 try:
-                    ocr_context = f"Voter Name: {name}\nRelative: {rel_name}\nRelation: {rel_type}\nCard Raw Text: {card_text_str}"
-                    card_record = repair_single_voter_card_groq(ocr_context, card_record)
+                    card_record = repair_single_voter_card_openrouter(ocr_context, card_record)
                 except Exception:
                     pass
-                if needs_ai_repair(card_record):
-                    try:
-                        card_record = repair_single_voter_card_openrouter(ocr_context, card_record)
-                    except Exception:
-                        pass
 
-            if card_record["nameHi"] and card_record["nameHi"] != "मतदाता" and len(card_record["nameHi"]) >= 2:
-                page_cards.append(card_record)
+        if card_record["nameHi"] and card_record["nameHi"] != "मतदाता" and len(card_record["nameHi"]) >= 2:
+            page_cards.append(card_record)
 
     # Scanned Page Grid Fallback
     is_non_voter_page = bool(re.search(r'संक्षिप्त विवरण|निर्वाचकों की संख्या|मतदाताओं की संख्या|वार्ड का नक्शा|सारणी', page_text))
@@ -1141,22 +1420,30 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                     )
                     
                     if parsed['name'] and parsed['name'] != "मतदाता" and len(parsed['name']) >= 2:
+                        active_sec_hi, active_sec_en = "", ""
+                        for sec_y, s_hi, s_en in page_sections:
+                            if card_y0 >= sec_y - 20:
+                                active_sec_hi, active_sec_en = s_hi, s_en
                         page_cards.append({
                             "serialNo": None,
                             "epic": card_epic,
                             "nameHi": parsed['name'],
+                            "nameEn": transliterate_hindi(parsed['name']),
                             "relativeNameHi": parsed['rel_name'],
+                            "relativeNameEn": transliterate_hindi(parsed['rel_name']),
                             "relationType": rel_type,
                             "houseNo": parsed['house'] or "-",
                             "age": age,
                             "gender": gender,
-                            "status": parsed['status']
+                            "status": parsed['status'],
+                            "villageName": active_sec_en,
+                            "villageNameHi": active_sec_hi
                         })
                 except Exception:
                     pass
 
     doc.close()
-    return p_idx, page_cards, page_epics
+    return p_idx, page_cards, page_epics, page_sections
 
 
 def extract_supplement_deletions(pdf_path: str) -> Dict[str, Dict[str, Any]]:
@@ -1324,11 +1611,25 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
         full_first_pages_text += "\n" + page_raw
         
     if not ward_no:
-        ward_m = re.search(r'(?:वार्ड|Ward)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)', full_first_pages_text, re.IGNORECASE)
+        ward_m = re.search(r'(?:वार्ड|Ward|रररर|ररडर)\s*(?:संख्या|No|क्रं|No\.|कमरपक|कमररक)?\s*[:\-]?\s*(\d+)', full_first_pages_text, re.IGNORECASE)
+        if not ward_m:
+            ward_m = re.search(r'Ward\s*(?:No)?[_\-\s]*0*(\d+)', os.path.basename(pdf_path), re.IGNORECASE)
         ward_no = ward_m.group(1) if ward_m else "1"
     if not booth_no:
-        part_m = re.search(r'(?:भाग|Part)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)', full_first_pages_text, re.IGNORECASE)
+        part_m = re.search(r'(?:भाग|Part|भरग)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)', full_first_pages_text, re.IGNORECASE)
+        if not part_m:
+            part_m = re.search(r'(?:मतदरन\s*बबस|मतदान\s*केंद्र|मतदान\s*स्थल).*?(\d+)\s*[-–]', full_first_pages_text, re.DOTALL)
         booth_no = part_m.group(1) if part_m else "1"
+
+    # Extract default village / gram panchayat from Page 1 & 2 headers
+    cover_village_hi = ""
+    cover_village_en = ""
+    gp_m = re.search(r'ग्रामपंचायत\s*[:ः\-]?\s*([^\n\r]+)', full_first_pages_text) or re.search(r'मुख्य\s*ग्राम\s*[:ः\-]?\s*([^\n\r]+)', full_first_pages_text)
+    if gp_m:
+        raw_gp = clean_hindi_name(gp_m.group(1).split()[0])
+        if raw_gp:
+            cover_village_hi = raw_gp
+            cover_village_en = transliterate_hindi(raw_gp)
         
     doc.close()
 
@@ -1347,10 +1648,19 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
     results.sort(key=lambda x: x[0])
     
     final_records = []
+    voters_template_records = []
     seen_serials = set()
     serial_counter = 1
+
+    current_village_hi = cover_village_hi or "मुख्य गाँव"
+    current_village_en = cover_village_en or "Main Village"
     
-    for p_idx, page_cards, page_epics in results:
+    for item in results:
+        p_idx = item[0]
+        page_cards = item[1]
+        page_epics = item[2]
+        page_sections = item[3] if len(item) > 3 else []
+
         if not page_cards:
             continue
 
@@ -1375,17 +1685,29 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
                 continue
 
             if not epic:
-                if card.get("relativeNameHi") and len(card.get("relativeNameHi")) >= 2 and card.get("age"):
-                    epic = f"VOTER_{serial_counter}"
+                if (card.get("relativeNameHi") and len(card.get("relativeNameHi")) >= 2) or card.get("serialNo"):
+                    epic = f"VOTER_{card_serial}"
                 else:
                     continue
 
             rel_name = card.get("relativeNameHi", "")
+            rel_name = strip_name_from_relative(voter_name, rel_name)
             rel_type = card.get("relationType", "पिता")
             house = card.get("houseNo", "-")
             age = card.get("age", "")
             gender = card.get("gender", "पुरुष")
             status = card.get("status", "Active")
+
+            # Dynamic village tracking per card
+            if card.get("villageNameHi"):
+                current_village_hi = card["villageNameHi"]
+            if card.get("villageName"):
+                current_village_en = card["villageName"]
+            v_hi = card.get("villageNameHi") or current_village_hi
+            v_en = card.get("villageName") or current_village_en
+
+            name_en = card.get("nameEn") or transliterate_hindi(voter_name)
+            rel_en = card.get("relativeNameEn") or transliterate_hindi(rel_name)
 
             # Rule F2: DELETED-STAMP reconciliation
             is_deleted_card = (
@@ -1409,8 +1731,10 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
                     # Hydrate 100% clean data from supplement
                     if supp_match.get("nameHi"):
                         voter_name = supp_match["nameHi"]
+                        name_en = transliterate_hindi(voter_name)
                     if supp_match.get("relativeNameHi"):
                         rel_name = supp_match["relativeNameHi"]
+                        rel_en = transliterate_hindi(rel_name)
                     if supp_match.get("relationType"):
                         rel_type = supp_match["relationType"]
                     if supp_match.get("houseNo") and supp_match["houseNo"] != "-":
@@ -1444,32 +1768,69 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
                 "क्रमांक": card_serial,
                 "पहचान पत्र (EPIC No)": epic,
                 "मतदाता का नाम": voter_name,
+                "मतदाता का नाम (English)": name_en,
                 "संबंधी का नाम": rel_name,
+                "संबंधी का नाम (English)": rel_en,
                 "संबंध प्रकार": rel_type,
                 "मकान संख्या": house,
                 "आयु": age,
                 "लिंग": gender,
                 "स्थिति": status,
+                "गाँव / मोहल्ला": v_hi,
+                "गाँव / मोहल्ला (English)": v_en,
                 "वार्ड संख्या": ward_no,
                 "बूथ / भाग संख्या": booth_no,
                 "पुनरीक्षण आवश्यक": "हाँ" if needs_review else "नहीं"
             })
+
+            voters_template_records.append({
+                'EPIC No': epic,
+                'Ward': str(ward_no or '1'),
+                'Part': str(booth_no or '1'),
+                'Serial No': card_serial,
+                'Name (English)': name_en,
+                'Name (Hindi)': voter_name,
+                'Age': age or 30,
+                'Gender': gender,
+                'Relation': rel_type,
+                'Relative Name (English)': rel_en,
+                'Relative Name (Hindi)': rel_name,
+                'House No': house or '-',
+                'House No (Hindi)': house or '-',
+                'Mobile': '',
+                'Caste': '',
+                'Family ID': '',
+                'Village': v_en,
+                'Village (Hindi)': v_hi
+            })
+
             serial_counter += 1
 
     if final_records:
-        df = pd.DataFrame(final_records)
         os.makedirs(os.path.dirname(os.path.abspath(excel_path)), exist_ok=True)
         
         with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='मतदाता सूची', index=False)
-            
-            ws = writer.sheets['मतदाता सूची']
-            for col in ws.columns:
+            # Sheet 1: Voters (exact match with voter-import-template.xlsx)
+            df_voters = pd.DataFrame(voters_template_records)
+            df_voters.to_excel(writer, sheet_name='Voters', index=False)
+            ws_voters = writer.sheets['Voters']
+            ws_voters.freeze_panes = 'A2'
+            for col in ws_voters.columns:
                 max_len = max(len(str(cell.value or '')) for cell in col)
                 col_letter = col[0].column_letter
-                ws.column_dimensions[col_letter].width = max(min(max_len + 4, 35), 12)
+                ws_voters.column_dimensions[col_letter].width = max(min(max_len + 4, 35), 12)
+
+            # Sheet 2: मतदाता सूची (standard localized electoral roll)
+            df_hindi = pd.DataFrame(final_records)
+            df_hindi.to_excel(writer, sheet_name='मतदाता सूची', index=False)
+            ws_hindi = writer.sheets['मतदाता सूची']
+            ws_hindi.freeze_panes = 'A2'
+            for col in ws_hindi.columns:
+                max_len = max(len(str(cell.value or '')) for cell in col)
+                col_letter = col[0].column_letter
+                ws_hindi.column_dimensions[col_letter].width = max(min(max_len + 4, 35), 12)
                 
-        print(f"SUCCESS: Exported {len(final_records)} records to {excel_path}")
+        print(f"SUCCESS: Exported {len(final_records)} records to {excel_path} (Sheets: Voters, मतदाता सूची)")
         
     return final_records
 
