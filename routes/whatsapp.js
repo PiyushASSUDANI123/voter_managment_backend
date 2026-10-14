@@ -369,9 +369,16 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
 
     const voterName = dbVoter.nameHi || dbVoter.nameEn || 'मतदाता';
     const ward = (dbVoter.wardNo || '').replace(/^(वार्ड|Ward)\s*/i, '') || '—';
-    const part = (dbVoter.partNo || '').replace(/^(भाग|Part)\s*/i, '') || '—';
-    const serial = dbVoter.serialNo ? `#${dbVoter.serialNo}` : '—';
-    const boothName = dbVoter.boothName || `भाग संख्या ${part}`;
+    const cleanWard = (dbVoter.wardNo || '').toString().trim().replace(/^(वार्ड|Ward)\s*/i, '').trim();
+    const rawWard = (dbVoter.wardNo || '').toString().trim();
+    const wardStation = org?.slipConfig?.wardPollingStations && typeof org.slipConfig.wardPollingStations === 'object'
+      ? (org.slipConfig.wardPollingStations[cleanWard]
+         || org.slipConfig.wardPollingStations[rawWard]
+         || org.slipConfig.wardPollingStations[`वार्ड ${cleanWard}`]
+         || org.slipConfig.wardPollingStations[`Ward ${cleanWard}`]
+         || Object.entries(org.slipConfig.wardPollingStations).find(([k, v]) => k.replace(/^(वार्ड|Ward)\s*/i, '').trim() === cleanWard && typeof v === 'string' && v.trim())?.[1])
+      : null;
+    const boothName = (wardStation && wardStation.trim()) || dbVoter.boothName || org?.slipConfig?.pollingStationFallback || `भाग संख्या ${part}`;
 
     // Create Dispatch record in DB (strictly bound to user's organization)
     const dispatch = await SlipDispatch.create({
@@ -660,9 +667,16 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
 
     const voterName = dbVoter.nameHi || dbVoter.nameEn || 'मतदाता';
     const ward = (dbVoter.wardNo || '').replace(/^(वार्ड|Ward)\s*/i, '') || '—';
-    const part = (dbVoter.partNo || '').replace(/^(भाग|Part)\s*/i, '') || '—';
-    const serial = dbVoter.serialNo ? `#${dbVoter.serialNo}` : '—';
-    const boothName = dbVoter.boothName || `भाग संख्या ${part}`;
+    const cleanWard = (dbVoter.wardNo || '').toString().trim().replace(/^(वार्ड|Ward)\s*/i, '').trim();
+    const rawWard = (dbVoter.wardNo || '').toString().trim();
+    const wardStation = org?.slipConfig?.wardPollingStations && typeof org.slipConfig.wardPollingStations === 'object'
+      ? (org.slipConfig.wardPollingStations[cleanWard]
+         || org.slipConfig.wardPollingStations[rawWard]
+         || org.slipConfig.wardPollingStations[`वार्ड ${cleanWard}`]
+         || org.slipConfig.wardPollingStations[`Ward ${cleanWard}`]
+         || Object.entries(org.slipConfig.wardPollingStations).find(([k, v]) => k.replace(/^(वार्ड|Ward)\s*/i, '').trim() === cleanWard && typeof v === 'string' && v.trim())?.[1])
+      : null;
+    const boothName = (wardStation && wardStation.trim()) || dbVoter.boothName || org?.slipConfig?.pollingStationFallback || `भाग संख्या ${part}`;
     const relativeName = dbVoter.relativeNameHi || dbVoter.relativeNameEn || '';
     const relationType = dbVoter.relationType || 'पिता/पति';
     const ageGender = `${dbVoter.age || '—'} वर्ष / ${dbVoter.gender || '—'}`;

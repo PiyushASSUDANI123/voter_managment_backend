@@ -546,7 +546,8 @@ router.get('/slip-config', async (req, res) => {
         subTitle: 'मतदाता सूचना पर्ची (Voter Slip) · वार्ड नंबर 82 Jodhpur',
         appealText: 'वार्ड नंबर 82 से भाजपा प्रत्याशी प्रसन्न चंद मेहता को अपना अमूल्य वोट देकर भारी मतों से विजय बनाएं।',
         footerAppeal: 'कमल का बटन दबाएं और भारी मतों से विजयी बनाएं',
-        pollingStationFallback: '569 - सामुदायिक भवन, जाटा बास, महामंदिर, जोधपुर'
+        pollingStationFallback: '569 - सामुदायिक भवन, जाटा बास, महामंदिर, जोधपुर',
+        wardPollingStations: {}
       }
     });
   } catch (err) {
