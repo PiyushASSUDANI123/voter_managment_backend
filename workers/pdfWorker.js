@@ -297,7 +297,11 @@ const ExcelJS = require('exceljs');
         const serialNumber = voter.serialNo || (i + 1);
         const voterStatus = voter.status || 'Active';
 
+        const targetWard = String(voter.wardNo || wardNo || defaultWardNo || '').trim();
+        const targetPart = String(voter.partNo || boothNo || defaultPartNo || '').trim();
+
         const updateFields = {
+          epic: voter.epic,
           serialNo: serialNumber,
           nameHi: voter.nameHi,
           nameEn: voter.nameHi, // Pure Hindi data only
@@ -308,38 +312,41 @@ const ExcelJS = require('exceljs');
           age: voter.age,
           gender: voter.gender,
           status: voterStatus,
+          wardNo: targetWard,
+          partNo: targetPart,
           villageName: voter.villageNameHi || voter.villageName || '',
           villageNameHi: voter.villageNameHi || ''
         };
 
-        if (wardNo || voter.wardNo) updateFields.wardNo = voter.wardNo || wardNo || defaultWardNo;
-        if (boothNo || voter.partNo) updateFields.partNo = voter.partNo || boothNo || defaultPartNo;
         if (uploadedBy) updateFields.assignedWorker = uploadedBy;
+
+        // 🚀 STRICT WARD + PART + SERIAL ISOLATION:
+        // Anchoring by (organizationId, wardNo, partNo, serialNo) guarantees that:
+        // 1. Every voter in this ward roll is uniquely identified by their official serial number.
+        // 2. Uploading a ward will NEVER overwrite or steal records from another ward,
+        //    even if supplement pages share EPICs across different ward lists.
+        // 3. Re-uploading a ward updates all voters in-place without duplicates or count fluctuations.
+        const voterFilter = {
+          organizationId: organizationId,
+          wardNo: targetWard,
+          serialNo: serialNumber
+        };
+        if (targetPart) {
+          voterFilter.partNo = targetPart;
+        }
 
         const setOnInsertFields = {
           _id: `voter_${crypto.randomUUID()}`,
-          epic: voter.epic,
-          serialNo: serialNumber,
-          status: voterStatus,
           organizationId: organizationId,
-          villageName: voter.villageNameHi || voter.villageName || '',
-          villageNameHi: voter.villageNameHi || ''
+          supportStatus: 'unmarked',
+          voted: false,
+          votedAt: null,
+          assignedWorker: uploadedBy || ''
         };
-
-        if (!wardNo && !voter.wardNo) setOnInsertFields.wardNo = defaultWardNo;
-        if (!boothNo && !voter.partNo) setOnInsertFields.partNo = defaultPartNo;
-        if (!uploadedBy) setOnInsertFields.assignedWorker = "";
-
-        // Defensive guard: remove any key from $setOnInsert that is already in $set
-        for (const key of Object.keys(setOnInsertFields)) {
-          if (key in updateFields) {
-            delete setOnInsertFields[key];
-          }
-        }
 
         return {
           updateOne: {
-            filter: { epic: voter.epic, organizationId: organizationId },
+            filter: voterFilter,
             update: {
               $set: updateFields,
               $setOnInsert: setOnInsertFields

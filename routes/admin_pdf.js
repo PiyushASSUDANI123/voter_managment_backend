@@ -312,14 +312,11 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
               hasExcel: Boolean(msg.excelPath)
             });
 
-            // Invalidate cache
+            // Invalidate cache immediately so UI shows exact live voter counts
             try {
               const cache = require('../lib/cache');
-              if (cache) {
-                const keys = cache.keys ? cache.keys() : [];
-                keys.forEach(k => {
-                  if (k.includes(organizationId)) cache.del(k);
-                });
+              if (cache && cache.flushAll) {
+                cache.flushAll();
               }
             } catch {}
 

@@ -777,7 +777,10 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       ).catch(() => {});
     }
 
-    const uniqueBatch = [...new Map(batch.map((voter) => [voter.epic, voter])).values()];
+    const uniqueBatch = [...new Map(batch.map((voter) => [
+      `${voter.wardNo || defaultWardNo || ''}_${voter.partNo || defaultBoothNo || ''}_${voter.serialNo || voter.epic || crypto.randomUUID()}`,
+      voter
+    ])).values()];
     
     // 🚀 Scale to 100,000+ (1 Lakh) voters safely with chunked bulk writes
     const CHUNK_SIZE = 2500;
@@ -788,9 +791,25 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       const chunk = uniqueBatch.slice(i, i + CHUNK_SIZE);
       const ops = chunk.map((voter) => {
         const { _id, ...updateData } = voter;
+        const vWard = String(voter.wardNo || defaultWardNo || '').trim();
+        const vPart = String(voter.partNo || defaultBoothNo || '').trim();
+        const vSerial = voter.serialNo ? parseInt(voter.serialNo, 10) : null;
+
+        const opFilter = { organizationId };
+        if (vWard && vSerial) {
+          opFilter.wardNo = vWard;
+          opFilter.serialNo = vSerial;
+          if (vPart) opFilter.partNo = vPart;
+        } else if (voter.epic) {
+          opFilter.epic = voter.epic;
+          if (vWard) opFilter.wardNo = vWard;
+        } else {
+          opFilter._id = voter._id || `voter_${crypto.randomUUID()}`;
+        }
+
         return {
           updateOne: {
-            filter: { organizationId, epic: voter.epic },
+            filter: opFilter,
             collation: { locale: 'en', strength: 2 },
             update: {
               $set: updateData,
@@ -805,9 +824,8 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       updated += chunkResult.matchedCount || 0;
     }
 
-    // Clear cache
-    const keys = cache.keys();
-    keys.forEach(k => cache.del(k));
+    // Clear cache immediately
+    cache.flushAll();
 
     try {
       const adminPdfRouter = require('./admin_pdf');
