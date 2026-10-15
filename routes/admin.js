@@ -1249,4 +1249,100 @@ router.delete('/demo-users/:id', verifyToken, isAdmin, async (req, res) => {
   }
 });
 
+// Admin-only: Rename or edit an existing Ward name across organization voters, allowedWards, and slip configs
+router.put('/wards/rename', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { organizationId, oldWard, newWard } = req.body;
+    if (!organizationId || !oldWard || !newWard) {
+      return res.status(400).json({ message: 'क्लाइंट (organizationId), पुराना वार्ड और नया वार्ड नाम अनिवार्य हैं।' });
+    }
+
+    const cleanOld = String(oldWard).trim();
+    const cleanNew = String(newWard).trim();
+
+    if (!cleanOld || !cleanNew) {
+      return res.status(400).json({ message: 'कृपया वैध वार्ड नाम दर्ज करें।' });
+    }
+
+    if (cleanOld === cleanNew) {
+      return res.json({ success: true, message: 'पुराना और नया नाम समान है, कोई बदलाव नहीं हुआ।' });
+    }
+
+    // 1. Update all voters for this organization
+    const voterResult = await Voter.updateMany(
+      { organizationId, wardNo: cleanOld },
+      { $set: { wardNo: cleanNew } }
+    );
+
+    // Also check case-insensitive or with 'वार्ड ' prefix if none matched directly
+    let extraModified = 0;
+    if (voterResult.modifiedCount === 0) {
+      const altResult = await Voter.updateMany(
+        { 
+          organizationId, 
+          wardNo: { $regex: new RegExp(`^\\s*(?:वार्ड\\s*)?${cleanOld.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') } 
+        },
+        { $set: { wardNo: cleanNew } }
+      );
+      extraModified = altResult.modifiedCount;
+    }
+
+    const totalModifiedVoters = voterResult.modifiedCount + extraModified;
+
+    // 2. Update Organization allowedWards & wards list
+    const org = await Organization.findById(organizationId);
+    if (org) {
+      let wardsArr = Array.isArray(org.allowedWards) ? [...org.allowedWards] : [];
+      let updatedAllowed = wardsArr.map(w => (String(w).trim() === cleanOld ? cleanNew : w));
+      if (!updatedAllowed.includes(cleanNew)) {
+        updatedAllowed.push(cleanNew);
+      }
+      updatedAllowed = Array.from(new Set(updatedAllowed.filter(w => String(w).trim() !== cleanOld)));
+
+      let generalWards = Array.isArray(org.wards) ? [...org.wards] : [];
+      let updatedWards = generalWards.map(w => (String(w).trim() === cleanOld ? cleanNew : w));
+      if (!updatedWards.includes(cleanNew)) {
+        updatedWards.push(cleanNew);
+      }
+      updatedWards = Array.from(new Set(updatedWards.filter(w => String(w).trim() !== cleanOld)));
+
+      // 3. Update slipConfig.wardPollingStations if present
+      const slipConfig = org.slipConfig || {};
+      if (slipConfig.wardPollingStations && typeof slipConfig.wardPollingStations === 'object') {
+        if (slipConfig.wardPollingStations[cleanOld] !== undefined) {
+          slipConfig.wardPollingStations[cleanNew] = slipConfig.wardPollingStations[cleanOld];
+          delete slipConfig.wardPollingStations[cleanOld];
+        }
+      }
+
+      await Organization.updateOne(
+        { _id: organizationId },
+        { 
+          $set: { 
+            allowedWards: updatedAllowed,
+            wards: updatedWards,
+            slipConfig: slipConfig
+          } 
+        }
+      );
+    }
+
+    // 4. Invalidate all cache related to master_data and wards_summary
+    if (cache && typeof cache.flushAll === 'function') {
+      cache.flushAll();
+    }
+
+    res.json({
+      success: true,
+      message: `वार्ड "${cleanOld}" को बदलकर सफलतापूर्वक "${cleanNew}" कर दिया गया (${totalModifiedVoters} मतदाता रिकॉर्ड्स अपडेट हुए)।`,
+      totalModifiedVoters,
+      oldWard: cleanOld,
+      newWard: cleanNew
+    });
+  } catch (err) {
+    console.error('Failed to rename ward:', err);
+    res.status(500).json({ message: 'वार्ड का नाम बदलने में त्रुटि आई: ' + err.message });
+  }
+});
+
 module.exports = router;

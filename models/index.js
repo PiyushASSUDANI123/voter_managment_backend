@@ -9,6 +9,7 @@ const organizationSchema = new mongoose.Schema({
   name: { type: String, required: true },
   enabledModules: { type: [String], default: [] },
   allowedWards: { type: [String], default: [] },
+  wards: { type: [String], default: [] },
   isActive: { type: Boolean, default: true },
   whatsappEnabled: { type: Boolean, default: true },
   whatsappCredits: { type: Number, default: 100 },

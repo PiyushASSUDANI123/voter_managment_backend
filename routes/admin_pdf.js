@@ -162,26 +162,62 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
     const globalBooth = (req.body.boothNo || "").trim();
     const globalDesc = (req.body.listDescription || "").trim();
 
+    // Parse sequential/comma-separated ward list (e.g. "17, 18" or "17 , 18")
+    let wardList = [];
+    if (globalWard) {
+      if (globalWard.includes(',')) {
+        wardList = globalWard.split(',').map(w => w.trim()).filter(Boolean);
+      } else if (globalWard.includes(' ') && globalWard.split(/\s+/).every(w => /^\d+$/.test(w) || w.startsWith('वार्ड'))) {
+        wardList = globalWard.split(/\s+/).map(w => w.trim()).filter(Boolean);
+      } else {
+        wardList = [globalWard];
+      }
+    }
+
+    let boothList = [];
+    if (globalBooth) {
+      if (globalBooth.includes(',')) {
+        boothList = globalBooth.split(',').map(b => b.trim()).filter(Boolean);
+      } else {
+        boothList = [globalBooth];
+      }
+    }
+
     const createdJobs = [];
     const { Organization } = require('../models');
     const { Worker } = require('worker_threads');
 
-    for (const file of pdfFiles) {
+    for (let fileIdx = 0; fileIdx < pdfFiles.length; fileIdx++) {
+      const file = pdfFiles[fileIdx];
       const filePath = file.path;
-      // Auto-detect ward from filename if not explicitly provided
-      let wardNo = globalWard;
-      if (!wardNo) {
+
+      // Sequential ward assignment for multi-file upload
+      let wardNo = '';
+      if (wardList.length > fileIdx) {
+        wardNo = wardList[fileIdx];
+      } else if (wardList.length === 1 && pdfFiles.length === 1) {
+        wardNo = wardList[0];
+      } else {
+        // Auto-detect ward from filename if not specified in sequential list
         const wardMatch = file.originalname.match(/(?:Ward|वार्ड|ward)[\s_\-]*0*(\d+)/i);
         if (wardMatch) {
           wardNo = wardMatch[1];
+        } else if (wardList.length === 1) {
+          wardNo = wardList[0];
         }
       }
 
-      let boothNo = globalBooth;
-      if (!boothNo) {
+      let boothNo = '';
+      if (boothList.length > fileIdx) {
+        boothNo = boothList[fileIdx];
+      } else if (boothList.length === 1 && pdfFiles.length === 1) {
+        boothNo = boothList[0];
+      } else {
         const boothMatch = file.originalname.match(/(?:Booth|बूथ|Part|भाग)[\s_\-]*0*(\d+)/i);
         if (boothMatch) {
           boothNo = boothMatch[1];
+        } else if (boothList.length === 1) {
+          boothNo = boothList[0];
         }
       }
 
@@ -191,7 +227,7 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
           if (Organization) {
             await Organization.updateOne(
               { _id: organizationId },
-              { $addToSet: { wards: wardNo } }
+              { $addToSet: { wards: wardNo, allowedWards: wardNo } }
             );
           }
         } catch (orgErr) {
