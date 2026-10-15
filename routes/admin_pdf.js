@@ -63,12 +63,35 @@ cron.schedule('0 * * * *', () => {
 // GET /jobs - to fetch recent upload jobs (SuperAdmin Only)
 router.get('/jobs', verifyToken, isAdmin, (req, res) => {
   const orgId = req.query.organizationId;
+  
+  // Deduplicate identical duplicate jobs in memory (same file, same org, within 20s)
+  const seenJobKeys = new Set();
+  for (const [id, job] of uploadJobs.entries()) {
+    const timeBucket = Math.floor(new Date(job.uploadedAt).getTime() / 20000);
+    const key = `${job.organizationId}_${job.filename}_${job.wardNo || ''}_${timeBucket}`;
+    if (seenJobKeys.has(key)) {
+      uploadJobs.delete(id);
+    } else {
+      seenJobKeys.add(key);
+    }
+  }
+
   let jobs = Array.from(uploadJobs.values());
   if (orgId) {
     jobs = jobs.filter(j => j.organizationId === orgId);
   }
   jobs.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   res.json(jobs);
+});
+
+// DELETE /jobs/:id - remove single job from history (SuperAdmin Only)
+router.delete('/jobs/:id', verifyToken, isAdmin, (req, res) => {
+  const { id } = req.params;
+  if (uploadJobs.has(id)) {
+    uploadJobs.delete(id);
+    return res.json({ success: true, message: 'जॉब हटा दी गई।' });
+  }
+  res.status(404).json({ error: 'Job not found' });
 });
 
 // DELETE /jobs - clear upload jobs (SuperAdmin Only)
@@ -114,7 +137,20 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
 }, async (req, res) => {
   try {
     const rawFiles = req.files && req.files.length ? req.files : (req.file ? [req.file] : []);
-    const pdfFiles = rawFiles.filter(f => f.originalname.toLowerCase().endsWith('.pdf') || f.mimetype === 'application/pdf');
+    const seenFiles = new Set();
+    const pdfFiles = [];
+    for (const f of rawFiles) {
+      const isPdf = f.originalname.toLowerCase().endsWith('.pdf') || f.mimetype === 'application/pdf';
+      if (isPdf) {
+        const key = `${f.originalname.toLowerCase().trim()}_${f.size}`;
+        if (!seenFiles.has(key)) {
+          seenFiles.add(key);
+          pdfFiles.push(f);
+        } else {
+          try { if (fs.existsSync(f.path)) fs.unlinkSync(f.path); } catch {}
+        }
+      }
+    }
     if (!pdfFiles.length) {
       return res.status(400).json({ error: 'कृपया कम से कम एक वैध PDF फाइल (.pdf) चुनें।' });
     }
