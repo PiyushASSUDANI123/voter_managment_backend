@@ -11,6 +11,41 @@ const boundedInteger = (value, fallback, maximum) => {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 };
 
+const buildWardFilterCondition = (ward) => {
+  if (typeof ward !== 'string' || !ward.trim()) return null;
+  const rawWard = ward.trim();
+  const cleanWard = rawWard.replace(/^(वार्ड|Ward)\s*/i, '').trim();
+  const escaped = cleanWard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const wardRegex = new RegExp(`^(\\s*(वार्ड|Ward)\\s*)?0*${escaped}\\s*$`, 'i');
+  const wardNum = Number.parseInt(cleanWard, 10);
+  if (!Number.isNaN(wardNum)) {
+    return {
+      $or: [
+        { wardNo: wardRegex },
+        { wardNo: wardNum }
+      ]
+    };
+  }
+  return { wardNo: wardRegex };
+};
+
+const applyWardFilter = (query, ward) => {
+  const cond = buildWardFilterCondition(ward);
+  if (!cond) return;
+  if (cond.$or) {
+    if (query.$and) {
+      query.$and.push(cond);
+    } else if (query.$or) {
+      query.$and = [{ $or: query.$or }, cond];
+      delete query.$or;
+    } else {
+      query.$or = cond.$or;
+    }
+  } else {
+    query.wardNo = cond.wardNo;
+  }
+};
+
 // Get ALL voters (for Turnout / Analytics)
 router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 'warroom'), async (req, res) => {
   try {
@@ -25,11 +60,12 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
       return res.json(cachedData);
     }
     
-    if (typeof ward === 'string' && ward.trim()) {
-      query.wardNo = new RegExp(ward.trim(), 'i');
-    }
+    applyWardFilter(query, ward);
     
-    const voters = await Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    const voters = await Voter.find(query)
+      .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+      .collation({ locale: 'en', numericOrdering: true })
+      .lean();
     
     // Set Cache
     cache.set(cacheKey, voters);
@@ -166,9 +202,7 @@ router.get('/turnout-pending', verifyToken, requireModule('voters', 'poll-desk',
     const query = addVoterAccess(req);
     query.voted = false;
 
-    if (typeof ward === 'string' && ward.trim()) {
-      query.wardNo = ward.trim();
-    }
+    applyWardFilter(query, ward);
 
     const projection = {
       _id: 1,
@@ -189,6 +223,7 @@ router.get('/turnout-pending', verifyToken, requireModule('voters', 'poll-desk',
       Voter.countDocuments(query),
       Voter.find(query, projection)
         .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+        .collation({ locale: 'en', numericOrdering: true })
         .skip(skip)
         .limit(limit)
         .lean()
@@ -253,9 +288,7 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
     const { ward, part, search } = req.query;
 
     const query = addVoterAccess(req);
-    if (typeof ward === 'string' && ward.trim()) {
-      query.wardNo = new RegExp(`^${ward.trim().replace(/^(वार्ड|Ward)\s*/i, '')}$`, 'i');
-    }
+    applyWardFilter(query, ward);
     if (typeof part === 'string' && part.trim()) {
       query.partNo = new RegExp(`^${part.trim().replace(/^(भाग|Part)\s*/i, '')}$`, 'i');
     }
@@ -391,7 +424,7 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
       }
     }
     
-    if (typeof ward === 'string' && ward.trim()) query.wardNo = new RegExp(ward.trim(), 'i');
+    applyWardFilter(query, ward);
     if (typeof part === 'string' && part.trim()) query.partNo = new RegExp(part.trim().replace(/^(भाग|Part)\s*/i, ''), 'i');
     if (typeof house === 'string' && house.trim()) query.houseNo = new RegExp(house.trim(), 'i');
     if (isMigrant === 'true' || isMigrant === 'false') query.isMigrant = isMigrant === 'true';
@@ -406,7 +439,10 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     const pageSize = boundedInteger(req.query.pageSize, 100, 10000);
     
     // Execute count and paginated query in parallel for 2x faster responses
-    const voterQuery = Voter.find(query).sort({ wardNo: 1, partNo: 1, serialNo: 1 }).lean();
+    const voterQuery = Voter.find(query)
+      .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+      .collation({ locale: 'en', numericOrdering: true })
+      .lean();
     if (!isAll) {
       voterQuery.skip((page - 1) * pageSize).limit(pageSize);
     } else {
