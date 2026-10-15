@@ -290,7 +290,7 @@ router.get('/organizations/:id/settings', verifyToken, async (req, res) => {
   try {
     const org = await Organization.findById(req.params.id).lean();
     if (!org) return res.status(404).json({ message: 'Organization not found.' });
-    res.json(org.settings || { hidePartNo: true, hidePhoto: false, requireEpic: false, showQrOnSlip: true, autoRollSync: true, electionType: 'ward' });
+    res.json(org.settings || { hidePartNo: true });
   } catch (err) {
     res.status(500).json({ message: 'Could not fetch organization settings.' });
   }
@@ -347,10 +347,41 @@ router.get('/dashboard-stats', verifyToken, isAdmin, async (req, res) => {
       Voter.countDocuments({ ...filter, voted: true })
     ]);
 
-    let currentSettings = { hidePartNo: true, hidePhoto: false, requireEpic: false, showQrOnSlip: true, autoRollSync: true, electionType: 'ward' };
+    // Ward-wise detailed breakdown
+    const rawWardBreakdown = await Voter.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$wardNo',
+          total: { $sum: 1 },
+          male: { $sum: { $cond: [{ $in: ['$gender', ['M', 'Male', 'पुरुष']] }, 1, 0] } },
+          female: { $sum: { $cond: [{ $in: ['$gender', ['F', 'Female', 'महिला', 'स्त्री']] }, 1, 0] } },
+          voted: { $sum: { $cond: ['$voted', 1, 0] } }
+        }
+      }
+    ]);
+    const wardBreakdown = rawWardBreakdown
+      .filter((w) => w._id !== null && w._id !== undefined && String(w._id).trim() !== '')
+      .map((w) => ({
+        wardNo: String(w._id),
+        total: w.total || 0,
+        male: w.male || 0,
+        female: w.female || 0,
+        voted: w.voted || 0,
+        turnout: w.total > 0 ? Number(((w.voted / w.total) * 100).toFixed(1)) : 0
+      }))
+      .sort((a, b) => {
+        const na = parseInt(a.wardNo, 10);
+        const nb = parseInt(b.wardNo, 10);
+        if (!isNaN(na) && !isNaN(nb)) return na - nb;
+        return a.wardNo.localeCompare(b.wardNo);
+      });
+
+    let currentOrg = null;
+    let currentSettings = { hidePartNo: true };
     if (orgId && orgId !== 'all') {
-      const org = await Organization.findById(orgId).lean();
-      if (org?.settings) currentSettings = { ...currentSettings, ...org.settings };
+      currentOrg = await Organization.findById(orgId).lean();
+      if (currentOrg?.settings) currentSettings = { ...currentSettings, ...currentOrg.settings };
     }
 
     res.json({
@@ -367,6 +398,15 @@ router.get('/dashboard-stats', verifyToken, isAdmin, async (req, res) => {
         votedCount,
         turnoutPercentage: totalVoters > 0 ? Number(((votedCount / totalVoters) * 100).toFixed(1)) : 0,
         settings: currentSettings,
+        activeOrg: currentOrg ? {
+          id: currentOrg._id,
+          name: currentOrg.name,
+          whatsappEnabled: currentOrg.whatsappEnabled ?? true,
+          whatsappCredits: currentOrg.whatsappCredits || 0,
+          enabledModules: currentOrg.enabledModules || [],
+          settings: currentSettings
+        } : null,
+        wardBreakdown,
         engineStatus: {
           pythonExtractor: 'Active (PyMuPDF & PyPDF Native)',
           dictionaryGlyphs: '13,000+ Master Glyphs Loaded',

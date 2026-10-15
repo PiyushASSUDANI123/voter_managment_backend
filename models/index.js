@@ -21,12 +21,7 @@ const organizationSchema = new mongoose.Schema({
   settings: {
     type: mongoose.Schema.Types.Mixed,
     default: {
-      hidePartNo: true,
-      hidePhoto: false,
-      requireEpic: false,
-      showQrOnSlip: true,
-      autoRollSync: true,
-      electionType: 'ward'
+      hidePartNo: true
     }
   },
   isDemo: { type: Boolean, default: false },
