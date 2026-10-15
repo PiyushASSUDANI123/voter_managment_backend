@@ -497,11 +497,15 @@ router.put('/users/:id/active', verifyToken, isAdmin, async (req, res) => {
 
 router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
   const orgId = typeof req.query.organizationId === 'string' ? req.query.organizationId.trim() : '';
+  const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 1000;
   const query = orgId ? { organizationId: orgId } : {};
+  if (ward) {
+    query.wardNo = ward;
+  }
     
-  const cacheKey = `master_data_${orgId || 'all'}_p${page}_l${limit}`;
+  const cacheKey = `master_data_${orgId || 'all'}_w${ward || 'all'}_p${page}_l${limit}`;
   const cachedData = cache.get(cacheKey);
   if (cachedData) return res.json(cachedData);
 
@@ -514,8 +518,18 @@ router.get('/master-data', verifyToken, isAdmin, async (req, res) => {
       .lean();
       
     const totalCount = await Voter.countDocuments(query);
+
+    // Get ALL distinct wards for this organization across entire database
+    const orgQuery = orgId ? { organizationId: orgId } : {};
+    const rawWards = await Voter.distinct('wardNo', orgQuery);
+    const wards = rawWards
+      .filter((w) => w !== null && w !== undefined && String(w).trim() !== '')
+      .map((w) => String(w).trim())
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
     const result = {
       voters,
+      wards,
       pagination: {
         total: totalCount,
         page,
