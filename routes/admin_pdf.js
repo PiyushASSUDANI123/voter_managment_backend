@@ -291,6 +291,7 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
                   ...uploadJobs.get(jobId), 
                   progress: 88 + dbProgress,
                   stageMessage: `💾 सत्यापित डेटा डेटाबेस में सुरक्षित हो रहा है (${processed}/${operations.length})...`
+                });
               }
 
               // 🚀 AUTOMATIC WARD ROLL SYNCHRONIZATION:
