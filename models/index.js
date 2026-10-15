@@ -155,7 +155,6 @@ const learnedDictionarySchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-learnedDictionarySchema.index({ key: 1 });
 learnedDictionarySchema.index({ type: 1 });
 
 const Organization = mongoose.model('Organization', organizationSchema);

@@ -221,9 +221,10 @@ const ExcelJS = require('exceljs');
             const rowWard = cellVal(row, 'wardNo', 2) || wardNo || defaultWardNo || '1';
             const rowBooth = cellVal(row, 'partNo', 3) || boothNo || defaultPartNo || '1';
 
+            const cleanEpic = (epic && epic !== '-' && epic.trim() !== '') ? epic.trim() : `VOTER_W${rowWard}_P${rowBooth}_S${serialVal || (finalVoterList.length + 1)}`;
             finalVoterList.push({
               serialNo: serialVal || (finalVoterList.length + 1),
-              epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
+              epic: cleanEpic,
               nameHi: cleanName,
               nameEn: cleanName, // Pure Hindi data only
               relativeNameHi: cleanRel.length >= 2 ? cleanRel : rawRel,

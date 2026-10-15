@@ -48,7 +48,7 @@ GLYPH_HASH_TO_HINDI = {
     '940f102545': 'ि', 'cad285f226': 'ि', 'f90e17bc6a': 'ि', 'ee740424e8': 'ि',
     '52e1ecd704': 'िं',
     '0bfe8aba54': 'ी', 'fd2c68b827': 'ी', '561778e61e': 'ी', '0c38a1de68': 'ी',
-    'eb4776a788': 'ु', '9270cf40b5': 'ु',
+    'eb4776a788': 'ु', '9270cf40b5': 'ु', '634b191808': 'ु',
     '139503929c': 'ू', '3ba30e63ba': 'पू', '7600b543f9': 'पू', '6a4f928c94': 'पू',
     '5673f83eb2': 'ृ',
     'ff774a509c': 'े', 'dc6ebfed73': 'े', 'a394fa367f': 'े',
@@ -64,7 +64,7 @@ GLYPH_HASH_TO_HINDI = {
     # Consonants & Conjuncts (व्यंजन व संयुक्त अक्षर)
     'ee91b64b3c': 'क', '74d744e8b3': 'क्ष', 'b0659ef005': 'क्र', '976ca4a5be': 'क्ष्', 'bdbd89856b': 'क',
     '63eefd4c14': 'क', 'bd6c1eae30': 'क', '40dd73efe7': 'क',
-    '8f83dd2ba5': 'ख्', '8b642bd434': 'ख', '11d46de407': 'ख', '6569af7a4c': 'ख', '634b191808': 'ख', '9364604c2b': 'ख', '6dcfad013f': 'ख', '521d45dc3d': 'ख',
+    '8f83dd2ba5': 'ख्', '8b642bd434': 'ख', '11d46de407': 'ख', '6569af7a4c': 'ख', '9364604c2b': 'ख', '6dcfad013f': 'ख', '521d45dc3d': 'ख',
     'd03da9c3bc': 'ग', 'd2ca7f547d': 'ग्र',
     '0cda6a9133': 'घ',
     'd6141a350d': 'च',
@@ -81,7 +81,7 @@ GLYPH_HASH_TO_HINDI = {
     '8ca833b6f2': 'ण', 'b677287bbf': 'ण',
     '9076ec49ea': 'त', '504921c133': 'त्र', '66e5287b94': 'त्', '230f051b3f': 'त', 'c005752634': 'त',
     '3147fcb544': 'थ्', 'a8bcabc3c7': 'थ',
-    '9b795c29ee': 'द', 'aa29d6fd6a': 'द', 'c248b92527': 'द', 'd05bddea29': 'द',
+    '9b795c29ee': 'द', 'aa29d6fd6a': 'द', 'c248b92527': 'द',
     '79e6225dee': 'ध', 'a029efb9f7': 'घ्र', '9b5ae33b17': 'ध्य',
     '7cb6208062': 'न', '6751e9ce99': 'न्', '5f1d629e11': 'द्र', '1861fa3ec0': 'न्न', 'c4da05d397': 'न्द्र',
     '91c4fb9cde': 'द्र', 'd652713d5b': 'द्र', '2480d88cb1': 'द्र', '2600840ca6': 'द्र', '6b25cffc75': 'द्र',
@@ -99,13 +99,13 @@ GLYPH_HASH_TO_HINDI = {
     '9f91e4de31': 'ल', '3cb89da98e': 'ल्य', '4e05551e38': 'ल्', 'bc42741d95': 'ल्', '42d41c8023': 'ल्', '11cfd439b5': 'ल्', '93d2baa93d': 'ल', 'b25df06259': 'ल', '19774bcbf7': 'ल', 'dd11ba4798': 'ल्',
     '9bbba179cc': 'ल', '9ecc1fb7b9': 'ल', '3a11828b40': 'ल', 'a6dd172025': 'ल', 'f4616f7a0d': 'ल', '1ba2a675b1': 'ल',
     '4732f6e4cd': 'व', 'a178079bc2': 'व्य', '258d7eff1b': 'व',
-    'd3151878f0': 'श', '68e969101b': 'श्व', '5f38615013': 'श्व', '23f46f5991': 'श्री',
+    'd3151878f0': 'श', '68e969101b': 'श्व', '5f38615013': 'श्व', '23f46f5991': 'श्र',
     '6af89d7c27': 'ष', 'f8eaaf6e12': 'ष्ठ', '764d763216': 'ष्ठ', '2baee2673d': 'ष्',
     '56654280a6': 'ष', '1480d40370': 'ष', 'e058c1c9d7': 'ष', '334d4c7c01': 'ष', 'a6b2b19659': 'ष', 'e3d24bba6b': 'ष',
     '5d1ddd1813': 'स', '8c44df052d': 'स्', 'dc32c6ed02': 'स्', '16396a0352': 'स्त्र', 'dc507a85ae': 'स्', '68454725c9': 'स्',
     '73ecbe4a6c': 'स', 'bead7b885e': 'स', 'ad6125f089': 'स',
     'acae4e4844': 'ह', 'f1bad2c450': 'ह', 'a4274d8f98': 'हु', 'adb8160514': 'हुक', '83692da855': 'हुक', '12fb9d0f09': 'हु',
-    'f2e90f726c': 'थ्व', '4d1d034fca': 'द्ध', 'aacdfd3864': 'द्ध',
+    'f2e90f726c': 'थ्व', '4d1d034fca': 'द्ध', 'aacdfd3864': 'द्ध', 'd05bddea29': 'द्ध',
 
     # Universal Cross-District Learned Glyphs (01.pdf, Maulasar, Ramasani Bala)
     '9ed0305c30': 'ए', '79cddf1cb9': 'ओ', 'cb9f96efec': 'अ', 'c21b1d6645': 'अ', '2807fb8b26': 'ऋ',
@@ -320,7 +320,13 @@ GOV_LEXICON_RULES = [
     (dev_word('पदम्'), 'पदम'),
     (dev_word('आईलाल'), 'आईदान'),
     (dev_word('सवा कंवर'), 'सुवा कंवर'),
-    (dev_word('लजलतर'), 'ललिता')
+    (dev_word('लजलतर'), 'ललिता'),
+    (dev_word('खखशी'), 'खुशी'),
+    (dev_word('खखशी खत्री'), 'खुशी खत्री'),
+    (re.compile(r'\bश्रीी+'), 'श्री'),
+    (dev_word('श्रीीकिसन'), 'श्रीकिसन'),
+    (dev_word('पंठेप सिंह'), 'प्रताप सिंह'),
+    (dev_word('पंेेप सिंह'), 'प्रताप सिंह')
 ]
 
 ENDRA_CONJUNCT_RULES = [
@@ -363,6 +369,11 @@ def normalize_electoral_hindi(text: str) -> str:
     s = re.sub(r'श्वव', 'श्व', s)
     s = re.sub(r'्यया', '्या', s)
     s = re.sub(r'क+कू', 'कंकू', s)
+
+    # Universal Devanagari vowel sign de-duplication (e.g. ाा->ा, ीी->ी, ूू->ू, ेे->े)
+    s = re.sub(r'([ािीुूृेैोौं्])\1+', r'\1', s)
+    s = re.sub(r'मांग्[ााुू]+राम', 'मांगूराम', s)
+    s = re.sub(r'पं[ठेेप]+ सिंह', 'प्रताप सिंह', s)
 
     # 1. Universal -ेन्द्र / -ेंद्र and conjunct half-matra fixes
     for regex, rep in ENDRA_CONJUNCT_RULES:
@@ -712,7 +723,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
 
                 voters_dict[s_num] = {
                     'क्रमांक': s_num,
-                    'पहचान पत्र क्रमांक (EPIC No)': epic_no or '-',
+                    'पहचान पत्र क्रमांक (EPIC No)': epic_no or f"VOTER_W{ward_no}_P{part_no}_{s_num}",
                     'मतदाता का नाम': name_hi or 'मतदाता',
                     'संबंधी का नाम': rel_hi or '-',
                     'संबंध प्रकार': rel_type,
@@ -725,7 +736,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                     'स्थिति': status,
 
                     # Keys matching database and template (Pure Hindi Data Only)
-                    'epic': epic_no or (f"VOTER_{s_num}" if status == "विलोपित" else ''),
+                    'epic': epic_no or f"VOTER_W{ward_no}_P{part_no}_{s_num}",
                     'ward': str(ward_no),
                     'part': str(part_no),
                     'serial': s_num,
