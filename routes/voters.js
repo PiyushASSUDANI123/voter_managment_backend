@@ -244,6 +244,118 @@ router.get('/wards-summary', verifyToken, requireModule('voters', 'community', '
   }
 });
 
+// High-performance Paginated Households for Family Voter Slips (Cached 60s)
+router.get('/households', verifyToken, requireModule('voters', 'community'), async (req, res) => {
+  try {
+    const page = boundedInteger(req.query.page, 1, 10000);
+    const limit = boundedInteger(req.query.limit, 30, 100);
+    const skip = (page - 1) * limit;
+    const { ward, part, search } = req.query;
+
+    const query = addVoterAccess(req);
+    if (typeof ward === 'string' && ward.trim()) {
+      query.wardNo = new RegExp(`^${ward.trim().replace(/^(वार्ड|Ward)\s*/i, '')}$`, 'i');
+    }
+    if (typeof part === 'string' && part.trim()) {
+      query.partNo = new RegExp(`^${part.trim().replace(/^(भाग|Part)\s*/i, '')}$`, 'i');
+    }
+    if (typeof search === 'string' && search.trim()) {
+      const q = search.trim();
+      const searchRegex = new RegExp(q, 'i');
+      query.$or = [
+        { houseNo: searchRegex },
+        { nameHi: searchRegex },
+        { nameEn: searchRegex },
+        { epic: searchRegex }
+      ];
+    }
+
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const cacheKey = `households_${orgId}_${req.user.id}_w${ward || ''}_p${part || ''}_s${search || ''}_p${page}_l${limit}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [facetResult] = await Voter.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: {
+            houseNo: { $ifNull: ['$houseNo', '—'] },
+            wardNo: { $ifNull: ['$wardNo', ''] },
+            partNo: { $ifNull: ['$partNo', ''] }
+          },
+          memberCount: { $sum: 1 },
+          headName: { $first: { $ifNull: ['$nameHi', '$nameEn'] } },
+          members: {
+            $push: {
+              _id: '$_id',
+              serialNo: '$serialNo',
+              nameHi: '$nameHi',
+              nameEn: '$nameEn',
+              relativeNameHi: '$relativeNameHi',
+              relativeNameEn: '$relativeNameEn',
+              relationType: '$relationType',
+              age: '$age',
+              gender: '$gender',
+              epic: '$epic',
+              houseNo: '$houseNo',
+              wardNo: '$wardNo',
+              partNo: '$partNo',
+              phone: { $ifNull: ['$mobileNo', '$phone'] },
+              mobileNo: { $ifNull: ['$mobileNo', '$phone'] },
+              boothName: '$boothName'
+            }
+          }
+        }
+      },
+      { $sort: { memberCount: -1 } },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          data: [{ $skip: skip }, { $limit: limit }]
+        }
+      }
+    ]);
+
+    const totalHouseholds = facetResult?.metadata?.[0]?.total || 0;
+    const rawList = facetResult?.data || [];
+    const households = rawList.map((item) => {
+      const houseNo = item._id.houseNo;
+      const wardNo = item._id.wardNo;
+      const partNo = item._id.partNo;
+      const members = (item.members || []).sort((a, b) => (Number(a.serialNo) || 0) - (Number(b.serialNo) || 0));
+      return {
+        key: `${wardNo}_${partNo}_${houseNo}`,
+        houseNo,
+        wardNo,
+        partNo,
+        members,
+        memberCount: item.memberCount,
+        headName: item.headName || members[0]?.nameHi || members[0]?.nameEn || 'मुखिया'
+      };
+    });
+
+    const totalPages = Math.max(1, Math.ceil(totalHouseholds / limit));
+    const result = {
+      households,
+      pagination: {
+        page,
+        limit,
+        total: totalHouseholds,
+        totalPages,
+        hasPrev: page > 1,
+        hasNext: page < totalPages
+      }
+    };
+
+    cache.set(cacheKey, result, 60);
+    res.json(result);
+  } catch (err) {
+    console.error('Households query failed:', err.message);
+    res.status(500).json({ message: 'Households could not be loaded.' });
+  }
+});
+
 // Get all voters (with search & pagination)
 router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'migrants'), async (req, res) => {
   try {
