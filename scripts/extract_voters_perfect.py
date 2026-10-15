@@ -598,6 +598,36 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
     newly_learned_glyphs = {}
     newly_learned_words = {}
 
+    # Pass 1: Global Glyph Pre-Scan across all Form XObjects in the entire PDF
+    # This guarantees that glyphs discovered on ANY page are immediately in the dictionary BEFORE Pass 2 extracts card 1
+    for p_idx in range(2, len(reader.pages) - 1):
+        page = reader.pages[p_idx]
+        res = page.get('/Resources')
+        if not res: continue
+        res = res.get_object()
+        if '/XObject' not in res: continue
+        xobjs = res['/XObject'].get_object()
+        for xk in xobjs:
+            xo = xobjs[xk].get_object()
+            if xo.get('/Subtype') != '/Form' or '/Resources' not in xo:
+                continue
+            xo_res = xo['/Resources'].get_object()
+            fres = xo_res.get('/Font', {}).get_object() if '/Font' in xo_res else {}
+            if '/9' not in fres:
+                continue
+            fo = fres['/9'].get_object()
+            if '/FontDescriptor' in fo and '/FontFile2' in fo['/FontDescriptor']:
+                ff2 = fo['/FontDescriptor']['/FontFile2'].get_data()
+                ch_hash = get_font_glyph_map(ff2)
+                to_uni = parse_to_unicode_map(fo.get('/ToUnicode'))
+                for c_val, g_h in ch_hash.items():
+                    if g_h and g_h not in GLYPH_HASH_TO_HINDI:
+                        u_ch = to_uni.get(c_val)
+                        if u_ch and ('\u0900' <= u_ch <= '\u097F' or u_ch in [' ', '॰']):
+                            GLYPH_HASH_TO_HINDI[g_h] = u_ch
+                            newly_learned_glyphs[g_h] = u_ch
+
+    # Pass 2: High-Precision Voter Card Extraction
     for p_idx in range(2, len(reader.pages) - 1):
         page = reader.pages[p_idx]
         res = page['/Resources'].get_object()
@@ -617,20 +647,12 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
             ch_hash = get_font_glyph_map(ff2)
             to_uni = parse_to_unicode_map(fo.get('/ToUnicode'))
 
-            # Continuous Dictionary Survey: Learn any unknown glyphs from ToUnicode CMap
-            for c_val, g_h in ch_hash.items():
-                if g_h and g_h not in GLYPH_HASH_TO_HINDI:
-                    u_ch = to_uni.get(c_val)
-                    if u_ch and ('\u0900' <= u_ch <= '\u097F' or u_ch in [' ', '॰']):
-                        GLYPH_HASH_TO_HINDI[g_h] = u_ch
-                        newly_learned_glyphs[g_h] = u_ch
-
             items = parse_pdf_stream_tokens(xo.get_data().decode('latin1'))
 
             serials = []
             for x, y, f, b in items:
                 s_txt = ''.join(chr(c) for c in b).strip()
-                if s_txt.isdigit() and f in ['/p', '/e', '/n', '/m'] and any(abs(x - target_x) < 5.0 for target_x in [46.7, 53.2, 220.2, 226.8, 393.6, 400.2]):
+                if s_txt.isdigit() and int(s_txt) > 0 and f != '/9' and any(abs(x - target_x) < 5.0 for target_x in [46.7, 53.2, 220.2, 226.8, 393.6, 400.2]):
                     serials.append((int(s_txt), x, y))
 
             for s_num, sx, sy in serials:
@@ -675,7 +697,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                     txt = ''.join(chr(c) for c in b).strip()
 
                     # EPIC No
-                    if sy - 2.0 <= y <= sy + 2.0 and cb_x + 40 <= x <= cb_x + 130 and f == '/a':
+                    if sy - 2.0 <= y <= sy + 2.0 and cb_x + 40 <= x <= cb_x + 130 and f != '/9':
                         if len(txt) >= 7:
                             epic_no = txt
 
@@ -683,7 +705,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                     elif sy - 16.5 <= y <= sy - 11.5:
                         if x >= cb_x + 21.0:
                             if f == '/9': name_hashes.extend([ch_hash.get(c, '') for c in b])
-                            elif f == '/a' and ' ' in ''.join(chr(c) for c in b): name_hashes.append('SPACE')
+                            elif f != '/9' and ' ' in ''.join(chr(c) for c in b): name_hashes.append('SPACE')
 
                     # Relation line
                     elif sy - 29.5 <= y <= sy - 24.5:
@@ -691,16 +713,16 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                             rel_type_hashes.extend([ch_hash.get(c, '') for c in b])
                         elif x >= cb_x + 45.0:
                             if f == '/9': rel_hashes.extend([ch_hash.get(c, '') for c in b])
-                            elif f == '/a' and ' ' in ''.join(chr(c) for c in b): rel_hashes.append('SPACE')
+                            elif f != '/9' and ' ' in ''.join(chr(c) for c in b): rel_hashes.append('SPACE')
 
                     # House No line
-                    elif sy - 42.5 <= y <= sy - 37.0 and f == '/a':
+                    elif sy - 42.5 <= y <= sy - 37.0 and f != '/9':
                         if txt.isdigit():
                             house_no = txt
 
                     # Age & Gender line
                     elif sy - 56.0 <= y <= sy - 50.0:
-                        if f == '/a' and txt.isdigit():
+                        if f != '/9' and txt.isdigit():
                             p_age = int(txt)
                             if 18 <= p_age <= 125:
                                 age_val = p_age
