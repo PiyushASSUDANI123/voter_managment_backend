@@ -150,15 +150,45 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
 // Get family members by houseNo
 router.get('/family/:houseNo', verifyToken, requireModule('voters', 'community'), async (req, res) => {
   try {
-    const query = addVoterAccess(req);
-    query.houseNo = req.params.houseNo;
-    
+    const rawHouse = (req.params.houseNo || '').trim();
+    const cleanHouse = rawHouse.replace(/^#/, '').trim();
+
+    const houseConditions = [
+      { houseNo: rawHouse },
+      { houseNo: cleanHouse },
+      { houseNo: `#${cleanHouse}` }
+    ];
+
+    const andConditions = [{ $or: houseConditions }];
+
     if (typeof req.query.ward === 'string' && req.query.ward.trim()) {
-      query.wardNo = req.query.ward.trim();
+      const rawWard = req.query.ward.trim();
+      const cleanWard = rawWard.replace(/^(वार्ड|Ward)\s*/i, '').trim();
+      andConditions.push({
+        $or: [
+          { wardNo: rawWard },
+          { wardNo: cleanWard },
+          { wardNo: `Ward ${cleanWard}` },
+          { wardNo: `वार्ड ${cleanWard}` }
+        ]
+      });
     }
+
     if (typeof req.query.part === 'string' && req.query.part.trim()) {
-      query.partNo = req.query.part.trim();
+      const rawPart = req.query.part.trim();
+      const cleanPart = rawPart.replace(/^(भाग|Part)\s*/i, '').trim();
+      andConditions.push({
+        $or: [
+          { partNo: rawPart },
+          { partNo: cleanPart },
+          { partNo: `Part ${cleanPart}` },
+          { partNo: `भाग ${cleanPart}` }
+        ]
+      });
     }
+
+    query.$and = andConditions;
+
     
     const voters = await Voter.find(query).sort({ serialNo: 1 }).lean();
     const formattedVoters = voters.map((v) => ({

@@ -665,10 +665,13 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
       return res.status(404).json({ message: 'मतदाता रिकॉर्ड नहीं मिला।' });
     }
 
+    const org = await Organization.findById(orgId).lean();
     const voterName = dbVoter.nameHi || dbVoter.nameEn || 'मतदाता';
-    const ward = (dbVoter.wardNo || '').replace(/^(वार्ड|Ward)\s*/i, '') || '—';
+    const ward = (dbVoter.wardNo || '').toString().trim().replace(/^(वार्ड|Ward)\s*/i, '') || '—';
     const cleanWard = (dbVoter.wardNo || '').toString().trim().replace(/^(वार्ड|Ward)\s*/i, '').trim();
     const rawWard = (dbVoter.wardNo || '').toString().trim();
+    const part = (dbVoter.partNo || req.body.partNo || '').toString().trim() || '—';
+    const serial = dbVoter.serialNo || '—';
     const wardStation = org?.slipConfig?.wardPollingStations && typeof org.slipConfig.wardPollingStations === 'object'
       ? (org.slipConfig.wardPollingStations[cleanWard]
          || org.slipConfig.wardPollingStations[rawWard]
@@ -681,14 +684,18 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
     const relationType = dbVoter.relationType || 'पिता/पति';
     const ageGender = `${dbVoter.age || '—'} वर्ष / ${dbVoter.gender || '—'}`;
 
+    const isFamily = req.body.slipType === 'family';
+    const familyCount = req.body.familyCount || 1;
+
     const dispatch = await SlipDispatch.create({
       _id: `disp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       voterId: dbVoter._id,
       voterEpic: dbVoter.epic,
-      voterName,
+      voterName: isFamily ? `मकान #${dbVoter.houseNo || '—'} परिवार (${familyCount} सदस्य)` : voterName,
       recipientPhone,
       status: 'manual_link',
       dispatchType: 'manual_whatsapp',
+      slipType: isFamily ? 'family' : 'individual',
       organizationId: orgId,
       sentBy: req.user.fullName || req.user.email || 'Client'
     });
@@ -704,10 +711,34 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
       }
     }
 
-    let messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
+    const viewUrl = `${getPublicBaseUrl(req)}/api/whatsapp/view/${dispatch._id}`;
+    const directPhotoLink = publicImageUrl || viewUrl;
+
+    let messageText = '';
+    if (isFamily) {
+      messageText = `🗳️ *आधिकारिक संयुक्त परिवार मतदाता सूचना पर्ची* 🗳️
+
+नमस्कार,
+आगामी चुनाव हेतु आपके परिवार (मकान #${dbVoter.houseNo || '—'}) की डिजिटल मतदाता पर्ची:
+
+📸 *डिजिटल परिवार पर्ची फोटो यहाँ देखें:*
+${directPhotoLink}
+
+• *मकान संख्या:* #${dbVoter.houseNo || '—'}
+• *वार्ड क्रमांक:* ${ward} · *भाग संख्या:* ${part}
+• *मतदान केंद्र:* ${boothName}
+• *परिवार में कुल मतदाता:* ${familyCount}
+
+🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। मतदान हेतु पहचान पत्र अवश्य साथ लाएं।_
+*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
+    } else {
+      messageText = `🗳️ *आधिकारिक मतदाता सूचना पर्ची* 🗳️
 
 नमस्कार *${voterName}* जी,
 आगामी चुनाव हेतु आपकी मतदाता पर्ची का विवरण:
+
+📸 *डिजिटल मतदाता पर्ची फोटो देखें / डाउनलोड करें:*
+${directPhotoLink}
 
 • *पहचान पत्र क्रमांक (EPIC):* ${dbVoter.epic || '—'}
 • *नाम:* ${voterName}
@@ -715,15 +746,11 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
 • *भाग संख्या:* ${part}
 • *मतदाता सूची क्रमांक:* ${serial}
 • *मतदान केंद्र:* ${boothName}
-• *आयु / लिंग:* ${ageGender}`;
+• *आयु / लिंग:* ${ageGender}
 
-    const viewUrl = `${getPublicBaseUrl(req)}/api/whatsapp/view/${dispatch._id}`;
-
-    if (publicImageUrl) {
-      messageText += `\n\n🖼️ *डिजिटल मतदाता पर्ची / पैम्फलेट फोटो यहाँ देखें:*\n${viewUrl}`;
+🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_
+*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
     }
-
-    messageText += `\n\n🇮🇳 _मतदान हमारा अधिकार एवं कर्तव्य है। कृपया पहचान पत्र (Voter ID/आधार कार्ड) साथ लाएं।_\n*— विजयसेतु (VijaySetu) चुनाव वॉर रूम*`;
 
     const waLink = `https://wa.me/${recipientPhone}?text=${encodeURIComponent(messageText)}`;
 
@@ -743,6 +770,7 @@ ${relativeName ? `• *${relationType}:* ${relativeName}\n` : ''}• *वार�
     res.status(500).json({ message: 'मैनुअल WhatsApp संदेश तैयार करने में त्रुटि हुई।' });
   }
 });
+
 
 // Public HTML page for viewing voter slip with OpenGraph meta tags for WhatsApp rich preview
 router.get('/view/:id', async (req, res) => {
