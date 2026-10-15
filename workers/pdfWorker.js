@@ -225,9 +225,9 @@ const ExcelJS = require('exceljs');
               serialNo: serialVal || (finalVoterList.length + 1),
               epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
               nameHi: cleanName,
-              nameEn: rawNameEn || cleanName,
+              nameEn: cleanName, // Pure Hindi data only
               relativeNameHi: cleanRel.length >= 2 ? cleanRel : rawRel,
-              relativeNameEn: rawRelEn || '',
+              relativeNameEn: cleanRel.length >= 2 ? cleanRel : rawRel, // Pure Hindi data only
               relationType: relType,
               houseNo: cleanH || cellVal(row, 'houseNo', 12),
               age: ageVal,
@@ -235,8 +235,8 @@ const ExcelJS = require('exceljs');
               status: statusVal,
               wardNo: String(rowWard).trim(),
               partNo: String(rowBooth).trim(),
-              villageName: villageEn,
-              villageNameHi: villageHi
+              villageName: villageHi || villageEn || '',
+              villageNameHi: villageHi || villageEn || ''
             });
           }
         });
@@ -299,15 +299,15 @@ const ExcelJS = require('exceljs');
         const updateFields = {
           serialNo: serialNumber,
           nameHi: voter.nameHi,
-          nameEn: voter.nameEn || voter.nameHi,
+          nameEn: voter.nameHi, // Pure Hindi data only
           relativeNameHi: voter.relativeNameHi,
-          relativeNameEn: voter.relativeNameEn || '',
+          relativeNameEn: voter.relativeNameHi || '', // Pure Hindi data only
           relationType: voter.relationType,
           houseNo: voter.houseNo,
           age: voter.age,
           gender: voter.gender,
           status: voterStatus,
-          villageName: voter.villageName || '',
+          villageName: voter.villageNameHi || voter.villageName || '',
           villageNameHi: voter.villageNameHi || ''
         };
 
@@ -321,7 +321,7 @@ const ExcelJS = require('exceljs');
           serialNo: serialNumber,
           status: voterStatus,
           organizationId: organizationId,
-          villageName: voter.villageName || '',
+          villageName: voter.villageNameHi || voter.villageName || '',
           villageNameHi: voter.villageNameHi || ''
         };
 

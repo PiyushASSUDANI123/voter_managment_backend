@@ -710,46 +710,39 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                 gender = "स्त्री" if ("स्त्र" in gen_hi or rel_type == "पति") else "पुरुष"
                 status = "विलोपित" if s_num in deletions_serials else "सक्रिय"
 
-                name_en = transliterate_hindi(name_hi) or 'Voter'
-                rel_en = transliterate_hindi(rel_hi) if rel_hi and rel_hi != '-' else '-'
-                village_en = transliterate_hindi(current_village_hi)
-
                 voters_dict[s_num] = {
                     'क्रमांक': s_num,
                     'पहचान पत्र क्रमांक (EPIC No)': epic_no or '-',
                     'मतदाता का नाम': name_hi or 'मतदाता',
-                    'मतदाता का नाम (English)': name_en,
                     'संबंधी का नाम': rel_hi or '-',
-                    'संबंधी का नाम (English)': rel_en,
                     'संबंध प्रकार': rel_type,
-                    'मकान संख्या': house_no or '105',
+                    'मकान संख्या': house_no or '-',
                     'आयु': age_val,
                     'लिंग': gender,
-                    'गाँव / मोहल्ला': current_village_hi,
-                    'गाँव / मोहल्ला (English)': village_en,
+                    'गाँव / मोहल्ला': current_village_hi or '-',
                     'वार्ड संख्या': str(ward_no),
                     'बूथ / भाग संख्या': str(part_no),
                     'स्थिति': status,
 
-                    # Keys matching voter-import-template.xlsx
+                    # Keys matching database and template (Pure Hindi Data Only)
                     'epic': epic_no or (f"VOTER_{s_num}" if status == "विलोपित" else ''),
                     'ward': str(ward_no),
                     'part': str(part_no),
                     'serial': s_num,
-                    'name_en': name_en,
+                    'name_en': '',  # Pure Hindi Data Only
                     'name_hi': name_hi or 'मतदाता',
                     'age': age_val,
                     'gender': gender,
                     'relation': rel_type,
-                    'relative_name_en': rel_en,
+                    'relative_name_en': '',  # Pure Hindi Data Only
                     'relative_name_hi': rel_hi or '-',
                     'house_no': house_no or '-',
                     'house_no_hi': house_no or '-',
                     'mobile': '',
                     'caste': '',
                     'family_id': '',
-                    'village_en': village_en,
-                    'village_hi': current_village_hi,
+                    'village_en': '',  # Pure Hindi Data Only
+                    'village_hi': current_village_hi or '-',
                     'status': status
                 }
 
@@ -1052,11 +1045,14 @@ def save_templated_voter_excel(voters_list, output_file_path, template_path=None
 
     ws_hi.freeze_panes = "A2"
 
-    # Set Sheet 1 ('Voters') as active sheet
-    wb.active = 0
+    # Set 'मतदाता सूची' as default active sheet for 100% pure Hindi Devanagari view
+    if 'मतदाता सूची' in wb.sheetnames:
+        wb.active = wb['मतदाता सूची']
+    else:
+        wb.active = 0
     os.makedirs(os.path.dirname(os.path.abspath(output_file_path)), exist_ok=True)
     wb.save(output_file_path)
-    print(f"SUCCESS: Exported {len(voters_list)} voters to {output_file_path} (Template sheet: 'Voters')")
+    print(f"SUCCESS: Exported {len(voters_list)} voters to {output_file_path} (Pure Hindi Data)")
 
 # ==============================================================================
 # 8. PER-PDF INDIVIDUAL EXECUTION (NO MERGING)
