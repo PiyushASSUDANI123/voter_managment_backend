@@ -268,7 +268,7 @@ def parse_pdf_stream_tokens(stream_str):
             items.append((round(x, 1), round(y, 1), curr_font, b_list))
     return items
 
-def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
+def extract_single_pdf(pdf_path, default_ward=None, default_part=None):
     reader = pypdf.PdfReader(pdf_path)
     bn = os.path.basename(pdf_path)
     
@@ -276,9 +276,21 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
     ward_no = default_ward
     if not ward_no:
         ward_m = re.search(r'Ward\s*(?:No)?[_\-\s]*0*(\d+)', bn, re.I)
-        ward_no = ward_m.group(1) if ward_m else "6"
+        ward_no = ward_m.group(1) if ward_m else "1"
         
-    part_no = default_part or "52"
+    part_no = default_part
+    if not part_no and len(reader.pages) > 0:
+        cover_txt = reader.pages[0].extract_text() or ""
+        booth_m = re.search(r'(?:मतदरन\s*बबस|मतदान\s*बूथ|मतदान\s*केंद्र|मतदान\s*स्थल).*?(\d+)\s*[-–]', cover_txt, re.S)
+        if booth_m:
+            part_no = booth_m.group(1)
+        else:
+            part_m = re.search(r'(?:भाग|Part|भरग)\s*(?:संख्या|No|क्रं|No\.)?\s*[:\-]?\s*(\d+)', cover_txt, re.I)
+            if part_m:
+                part_no = part_m.group(1)
+    
+    if not part_no:
+        part_no = "1"
     
     # 2. Extract Supplement Deletions (serials 283, 313, 377, 401)
     deletions_serials = set()

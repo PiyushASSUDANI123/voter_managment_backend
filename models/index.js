@@ -18,6 +18,17 @@ const organizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {}
   },
+  settings: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {
+      hidePartNo: true,
+      hidePhoto: false,
+      requireEpic: false,
+      showQrOnSlip: true,
+      autoRollSync: true,
+      electionType: 'ward'
+    }
+  },
   isDemo: { type: Boolean, default: false },
   demoPassword: { type: String, default: null },
   district: { type: String, default: '' },

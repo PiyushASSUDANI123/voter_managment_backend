@@ -121,6 +121,7 @@ exports.login = async (req, res) => {
             scopeValue: user.scopeValue || '',
             modules: enabledModules,
             allowedWards: org.allowedWards || [],
+            settings: org.settings || { hidePartNo: true },
           },
         });
       }
@@ -153,6 +154,7 @@ exports.getClients = async (req, res) => {
           candidateName: o.candidateName || '',
           candidateParty: o.candidateParty || '',
           voterCount: voterCountMap[o._id] || 0,
+          settings: o.settings || { hidePartNo: true },
         }))
       );
     } else {
@@ -167,6 +169,7 @@ exports.getClients = async (req, res) => {
           candidateName: org.candidateName || '',
           candidateParty: org.candidateParty || '',
           voterCount,
+          settings: org.settings || { hidePartNo: true },
         },
       ]);
     }

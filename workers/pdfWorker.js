@@ -115,7 +115,7 @@ const ExcelJS = require('exceljs');
       targetExcelPath = path.join(excelDir, excelFilename);
 
       try {
-        const pyResult = await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || defaultPartNo);
+        const pyResult = await runPythonPdfToExcel(filePath, targetExcelPath, wardNo || defaultWardNo, boothNo || '');
         console.log(`[pdfWorker] Python engine finished successfully:`, pyResult);
         updateProgress(65, '📊 जनरेट की गई Excel तालिका से सत्यापित मतदाता डेटा लोड हो रहा है...');
         
