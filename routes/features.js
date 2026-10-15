@@ -402,6 +402,9 @@ router.get('/export.xlsx', async (req, res) => {
     };
     const requiredModules = datasetModules[dataset];
     if (!requiredModules) return res.status(400).json({ message: 'Invalid dataset requested.' });
+    if (['voters', 'turnout', 'migrants', 'community'].includes(dataset) && req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'पूरा डेटा एक साथ डाउनलोड करने की अनुमति केवल सुपर एडमिन को है।' });
+    }
     if (req.user.role !== 'admin' && !requiredModules.some((module) => req.user.modules?.includes(module))) {
       return res.status(403).json({ message: 'Your account does not have access to this export.' });
     }
