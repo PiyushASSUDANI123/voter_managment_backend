@@ -172,6 +172,70 @@ REPH_HASHES = {'9a18581fbc', '906d14ca84', 'def56c5e38', 'a7e73062a8', '3e6d4c4f
 MATRA_CHARS = {'ा', 'ि', 'ी', 'ु', 'ू', 'ृ', 'े', 'ै', 'ो', 'ौ', 'ं', 'ों', 'िं', '्', 'ें', 'ॅ'}
 
 # ==============================================================================
+# CONTINUOUS SELF-LEARNING GLYPH & WORD DICTIONARY SYSTEM
+# ==============================================================================
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+os.makedirs(DATA_DIR, exist_ok=True)
+LEARNED_DICT_FILE = os.path.join(DATA_DIR, 'learned_dictionary.json')
+
+def load_learned_dictionary():
+    if os.path.exists(LEARNED_DICT_FILE):
+        try:
+            with open(LEARNED_DICT_FILE, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+                return d.get('glyphs', {}), d.get('words', {})
+        except Exception:
+            pass
+    return {}, {}
+
+def save_learned_dictionary(new_glyphs, new_words=None):
+    if not new_glyphs and not new_words:
+        return 0
+    try:
+        cur_glyphs, cur_words = load_learned_dictionary()
+        if new_glyphs:
+            cur_glyphs.update(new_glyphs)
+        if new_words:
+            cur_words.update(new_words)
+        payload = {
+            'glyphs': cur_glyphs,
+            'words': cur_words,
+            'total_glyphs': len(cur_glyphs),
+            'total_words': len(cur_words),
+            'last_updated': str(os.path.getmtime(LEARNED_DICT_FILE)) if os.path.exists(LEARNED_DICT_FILE) else ""
+        }
+        with open(LEARNED_DICT_FILE, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        return len(new_glyphs or {}) + len(new_words or {})
+    except Exception:
+        return 0
+
+def parse_to_unicode_map(to_uni_obj):
+    if not to_uni_obj:
+        return {}
+    try:
+        u_data = to_uni_obj.get_data().decode('latin1', errors='ignore')
+    except Exception:
+        return {}
+    u_map = {}
+    for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', u_data):
+        s_code = int(m.group(1), 16)
+        e_code = int(m.group(2), 16)
+        u_val = chr(int(m.group(3), 16))
+        for c in range(s_code, e_code + 1):
+            u_map[c] = u_val
+    for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', u_data):
+        c_code = int(m.group(1), 16)
+        u_val = chr(int(m.group(2), 16))
+        u_map[c_code] = u_val
+    return u_map
+
+# Dynamically merge learned dictionary on startup
+_learned_g, _learned_w = load_learned_dictionary()
+if _learned_g:
+    GLYPH_HASH_TO_HINDI.update(_learned_g)
+
+# ==============================================================================
 # 2. UNIVERSAL GOVERNMENT ELECTORAL LEXICON (Standardized Hindi Names)
 # ==============================================================================
 def dev_word(w: str) -> str:
@@ -520,6 +584,8 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
     INVALID_VILLAGE_KEYWORDS = ['लिंग', 'आयु', 'पुरुष', 'स्त्री', 'विधानसभा', 'निर्वाचक', 'भाग', 'घटक', 'संख्या']
 
     voters_dict = {}
+    newly_learned_glyphs = {}
+    newly_learned_words = {}
 
     for p_idx in range(2, len(reader.pages) - 1):
         page = reader.pages[p_idx]
@@ -538,6 +604,16 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
             fo = fres['/9'].get_object()
             ff2 = fo['/FontDescriptor']['/FontFile2'].get_data()
             ch_hash = get_font_glyph_map(ff2)
+            to_uni = parse_to_unicode_map(fo.get('/ToUnicode'))
+
+            # Continuous Dictionary Survey: Learn any unknown glyphs from ToUnicode CMap
+            for c_val, g_h in ch_hash.items():
+                if g_h and g_h not in GLYPH_HASH_TO_HINDI:
+                    u_ch = to_uni.get(c_val)
+                    if u_ch and ('\u0900' <= u_ch <= '\u097F' or u_ch in [' ', '॰']):
+                        GLYPH_HASH_TO_HINDI[g_h] = u_ch
+                        newly_learned_glyphs[g_h] = u_ch
+
             items = parse_pdf_stream_tokens(xo.get_data().decode('latin1'))
 
             serials = []
@@ -676,6 +752,10 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                     'village_hi': current_village_hi,
                     'status': status
                 }
+
+    if newly_learned_glyphs or newly_learned_words:
+        save_learned_dictionary(newly_learned_glyphs, newly_learned_words)
+        print(f"[Auto-Learner] Successfully surveyed & added {len(newly_learned_glyphs)} glyphs to dictionary from {bn}.")
 
     return [voters_dict[k] for k in sorted(voters_dict.keys())]
 
@@ -1019,8 +1099,15 @@ if __name__ == "__main__":
         print(f"\nProcessing Single PDF: {bn} ...")
         rows = extract_single_pdf(pdf_file, default_ward=args.ward, default_part=args.part)
         save_templated_voter_excel(rows, out_path, template_path=args.template)
-        print(f"DONE: Generated individual Excel file: {out_path} ({len(rows)} voters)")
-        print(json.dumps({"success": True, "count": len(rows), "file": out_path}))
+        learned_g, learned_w = load_learned_dictionary()
+        print(json.dumps({
+            "success": True,
+            "count": len(rows),
+            "file": out_path,
+            "total_dictionary_glyphs": len(GLYPH_HASH_TO_HINDI),
+            "learned_glyphs": len(learned_g),
+            "learned_words": len(learned_w)
+        }))
 
     else:
         # Directory processing: process EVERY PDF into its OWN INDIVIDUAL Excel file (NO MERGING)

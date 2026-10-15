@@ -87,9 +87,20 @@ router.get('/download-excel/:id', verifyToken, isAdmin, (req, res) => {
   res.download(job.excelPath, downloadName);
 });
 
-// Task 3: Admin PDF Upload & Voter ID Extraction (SuperAdmin Only)
+// GET /dictionary-stats - Get real-time status of the self-learning dictionary
+router.get('/dictionary-stats', verifyToken, isAdmin, async (req, res) => {
+  try {
+    const { getDictionaryStats } = require('../lib/dictionaryService');
+    const stats = await getDictionaryStats();
+    res.json(stats);
+  } catch (err) {
+    res.status(500).json({ error: 'Could not fetch dictionary stats' });
+  }
+});
+
+// Task 3: Admin PDF Upload & Voter ID Extraction (SuperAdmin Only) - Supports Single & Multiple PDFs
 router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
-  upload.single('pdf')(req, res, (err) => {
+  upload.any()(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(413).json({ error: 'फाइल का आकार 100MB से बड़ा है। कृपया 100MB से छोटी PDF फाइल अपलोड करें।' });
@@ -102,153 +113,193 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
   });
 }, async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'कृपया एक वैध PDF फाइल अपलोड करें।' });
-    
-    const filePath = req.file.path;
-    const organizationId = req.body.organizationId || "org_default";
-    const wardNo = (req.body.wardNo || "").trim();
-    const boothNo = (req.body.boothNo || "").trim();
-    const uploadedBy = (req.body.uploadedBy || "").trim();
-    const listDescription = (req.body.listDescription || "").trim();
-    const jobId = crypto.randomUUID();
-
-    // Auto-register ward in Organization if new
-    if (wardNo && organizationId) {
-      try {
-        const { Organization } = require('../models');
-        if (Organization) {
-          await Organization.updateOne(
-            { _id: organizationId },
-            { $addToSet: { wards: wardNo } }
-          );
-        }
-      } catch (orgErr) {
-        console.warn('Could not update organization wards:', orgErr.message);
-      }
+    const rawFiles = req.files && req.files.length ? req.files : (req.file ? [req.file] : []);
+    const pdfFiles = rawFiles.filter(f => f.originalname.toLowerCase().endsWith('.pdf') || f.mimetype === 'application/pdf');
+    if (!pdfFiles.length) {
+      return res.status(400).json({ error: 'कृपया कम से कम एक वैध PDF फाइल (.pdf) चुनें।' });
     }
+    
+    const organizationId = req.body.organizationId || "org_default";
+    const uploadedBy = (req.body.uploadedBy || "").trim();
+    const useOcr = req.body.useOcr === 'true' || req.body.useOcr === 'on' || req.body.useOcr === true;
+    const globalWard = (req.body.wardNo || "").trim();
+    const globalBooth = (req.body.boothNo || "").trim();
+    const globalDesc = (req.body.listDescription || "").trim();
 
-    uploadJobs.set(jobId, {
-      id: jobId,
-      filename: req.file.originalname,
-      organizationId: organizationId,
-      wardNo: wardNo,
-      boothNo: boothNo,
-      uploadedBy: uploadedBy,
-      listDescription: listDescription,
-      status: 'processing',
-      progress: 5,
-      stageMessage: '📄 PDF फ़ाइल प्राप्त हुई, प्रक्रिया शुरू...',
-      extractedCount: 0,
-      uploadedAt: new Date().toISOString()
-    });
-
-    // Respond immediately to avoid browser timeout for large PDFs
-    res.json({ message: 'Upload started', backgroundProcessing: true, jobId });
-
-    // Process using Worker Thread to avoid blocking the main event loop
+    const createdJobs = [];
+    const { Organization } = require('../models');
     const { Worker } = require('worker_threads');
-    const worker = new Worker(path.join(__dirname, '../workers/pdfWorker.js'), {
-      workerData: {
-        filePath,
-        organizationId,
-        useOcr: req.body.useOcr === 'true' || req.body.useOcr === 'on' || req.body.useOcr === true,
-        wardNo,
-        boothNo,
-        uploadedBy
+
+    for (const file of pdfFiles) {
+      const filePath = file.path;
+      // Auto-detect ward from filename if not explicitly provided
+      let wardNo = globalWard;
+      if (!wardNo) {
+        const wardMatch = file.originalname.match(/(?:Ward|वार्ड|ward)[\s_\-]*0*(\d+)/i);
+        if (wardMatch) {
+          wardNo = wardMatch[1];
+        }
       }
-    });
 
-    worker.on('message', async (msg) => {
-      if (msg.type === 'progress') {
-        uploadJobs.set(jobId, { 
-          ...uploadJobs.get(jobId), 
-          progress: typeof msg.data === 'number' ? msg.data : (msg.progress || 0),
-          stageMessage: msg.stage || uploadJobs.get(jobId)?.stageMessage || 'प्रोसेसिंग चालू है...'
-        });
-      } else if (msg.type === 'done') {
-        const operations = msg.data;
-        const epicsCount = msg.epicsCount;
-        
+      let boothNo = globalBooth;
+      if (!boothNo) {
+        const boothMatch = file.originalname.match(/(?:Booth|बूथ|Part|भाग)[\s_\-]*0*(\d+)/i);
+        if (boothMatch) {
+          boothNo = boothMatch[1];
+        }
+      }
+
+      // Auto-register ward in Organization if new
+      if (wardNo && organizationId) {
         try {
-          if (operations.length > 0) {
-            const CHUNK_SIZE = 2500;
-            let processed = 0;
-            for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
-              const chunk = operations.slice(i, i + CHUNK_SIZE);
-              await Voter.bulkWrite(chunk, { ordered: false });
-              processed += chunk.length;
-              const dbProgress = Math.floor((processed / operations.length) * 11);
-              uploadJobs.set(jobId, { 
-                ...uploadJobs.get(jobId), 
-                progress: 88 + dbProgress,
-                stageMessage: `💾 सत्यापित डेटा डेटाबेस में सुरक्षित हो रहा है (${processed}/${operations.length})...`
-              });
-            }
+          if (Organization) {
+            await Organization.updateOne(
+              { _id: organizationId },
+              { $addToSet: { wards: wardNo } }
+            );
           }
-          
-          uploadJobs.set(jobId, {
-            ...uploadJobs.get(jobId),
-            status: 'completed',
-            progress: 100,
-            stageMessage: '✅ सत्यापन पूर्ण! सभी मतदाता रिकॉर्ड्स सुरक्षित हो गए हैं।',
-            extractedCount: epicsCount,
-            excelPath: msg.excelPath,
-            excelFilename: msg.excelFilename,
-            hasExcel: Boolean(msg.excelPath)
+        } catch (orgErr) {
+          console.warn('Could not update organization wards:', orgErr.message);
+        }
+      }
+
+      const jobId = crypto.randomUUID();
+      const listDescription = globalDesc || (pdfFiles.length > 1 ? file.originalname : (wardNo ? `वार्ड ${wardNo} मतदाता सूची` : ''));
+
+      uploadJobs.set(jobId, {
+        id: jobId,
+        filename: file.originalname,
+        organizationId: organizationId,
+        wardNo: wardNo,
+        boothNo: boothNo,
+        uploadedBy: uploadedBy,
+        listDescription: listDescription,
+        status: 'processing',
+        progress: 5,
+        stageMessage: '📄 PDF फ़ाइल प्राप्त हुई, प्रक्रिया शुरू...',
+        extractedCount: 0,
+        uploadedAt: new Date().toISOString()
+      });
+
+      createdJobs.push({ jobId, filename: file.originalname, wardNo });
+
+      // Start worker thread
+      const worker = new Worker(path.join(__dirname, '../workers/pdfWorker.js'), {
+        workerData: {
+          filePath,
+          organizationId,
+          useOcr,
+          wardNo,
+          boothNo,
+          uploadedBy
+        }
+      });
+
+      worker.on('message', async (msg) => {
+        if (msg.type === 'progress') {
+          uploadJobs.set(jobId, { 
+            ...uploadJobs.get(jobId), 
+            progress: typeof msg.data === 'number' ? msg.data : (msg.progress || 0),
+            stageMessage: msg.stage || uploadJobs.get(jobId)?.stageMessage || 'प्रोसेसिंग चालू है...'
           });
-
-          // Invalidate cache for the organization so newly uploaded voters reflect immediately
+        } else if (msg.type === 'done') {
+          const operations = msg.data;
+          const epicsCount = msg.epicsCount;
+          
           try {
-            const cache = require('../lib/cache');
-            if (cache) {
-              const keys = cache.keys ? cache.keys() : [];
-              keys.forEach(k => {
-                if (k.includes(organizationId)) cache.del(k);
-              });
+            if (operations && operations.length > 0) {
+              const CHUNK_SIZE = 2500;
+              let processed = 0;
+              for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
+                const chunk = operations.slice(i, i + CHUNK_SIZE);
+                await Voter.bulkWrite(chunk, { ordered: false });
+                processed += chunk.length;
+                const dbProgress = Math.floor((processed / operations.length) * 11);
+                uploadJobs.set(jobId, { 
+                  ...uploadJobs.get(jobId), 
+                  progress: 88 + dbProgress,
+                  stageMessage: `💾 सत्यापित डेटा डेटाबेस में सुरक्षित हो रहा है (${processed}/${operations.length})...`
+                });
+              }
             }
-          } catch {}
 
-          console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters. Excel generated: ${msg.excelFilename}`);
-        } catch (dbError) {
+            // Sync any newly learned dictionary entries to MongoDB
+            try {
+              const { syncFromDiskToDb } = require('../lib/dictionaryService');
+              await syncFromDiskToDb();
+            } catch {}
+            
+            uploadJobs.set(jobId, {
+              ...uploadJobs.get(jobId),
+              status: 'completed',
+              progress: 100,
+              stageMessage: '✅ सत्यापन व डिक्शनरी विस्तार पूर्ण! सभी मतदाता रिकॉर्ड्स सुरक्षित हो गए हैं।',
+              extractedCount: epicsCount,
+              excelPath: msg.excelPath,
+              excelFilename: msg.excelFilename,
+              hasExcel: Boolean(msg.excelPath)
+            });
+
+            // Invalidate cache
+            try {
+              const cache = require('../lib/cache');
+              if (cache) {
+                const keys = cache.keys ? cache.keys() : [];
+                keys.forEach(k => {
+                  if (k.includes(organizationId)) cache.del(k);
+                });
+              }
+            } catch {}
+
+            console.log(`Background PDF processing complete for ${filePath}. Extracted ${epicsCount} voters. Excel: ${msg.excelFilename}`);
+          } catch (dbError) {
+            uploadJobs.set(jobId, { 
+              ...uploadJobs.get(jobId), 
+              status: 'failed', 
+              progress: 0, 
+              errorMessage: `डेटाबेस में सुरक्षित करने में त्रुटि: ${dbError.message}` 
+            });
+            console.error(`Database write failed for ${filePath}:`, dbError);
+          }
+        } else if (msg.type === 'error') {
           uploadJobs.set(jobId, { 
             ...uploadJobs.get(jobId), 
             status: 'failed', 
             progress: 0, 
-            errorMessage: `डेटाबेस में सुरक्षित करने में त्रुटि: ${dbError.message}` 
+            errorMessage: msg.data || 'PDF पार्सिंग में समस्या आई।' 
           });
-          console.error(`Database write failed for ${filePath}:`, dbError);
+          console.error(`Worker PDF processing failed for ${filePath}:`, msg.data);
         }
-      } else if (msg.type === 'error') {
-        uploadJobs.set(jobId, { 
-          ...uploadJobs.get(jobId), 
-          status: 'failed', 
-          progress: 0, 
-          errorMessage: msg.data || 'PDF पार्सिंग में समस्या आई।' 
-        });
-        console.error(`Worker PDF processing failed for ${filePath}:`, msg.data);
-      }
-    });
-
-    worker.on('error', (err) => {
-      uploadJobs.set(jobId, { 
-        ...uploadJobs.get(jobId), 
-        status: 'failed', 
-        progress: 0, 
-        errorMessage: err.message || 'Worker thread execution error' 
       });
-      console.error(`Worker error for ${filePath}:`, err);
-    });
 
-    worker.on('exit', (code) => {
-      if (code !== 0 && uploadJobs.get(jobId)?.status !== 'completed') {
+      worker.on('error', (err) => {
         uploadJobs.set(jobId, { 
           ...uploadJobs.get(jobId), 
           status: 'failed', 
           progress: 0, 
-          errorMessage: `Worker process exited with code ${code}` 
+          errorMessage: err.message || 'Worker thread execution error' 
         });
-        console.error(`Worker stopped with exit code ${code}`);
-      }
+        console.error(`Worker error for ${filePath}:`, err);
+      });
+
+      worker.on('exit', (code) => {
+        if (code !== 0 && uploadJobs.get(jobId)?.status !== 'completed') {
+          uploadJobs.set(jobId, { 
+            ...uploadJobs.get(jobId), 
+            status: 'failed', 
+            progress: 0, 
+            errorMessage: `Worker process exited with code ${code}` 
+          });
+        }
+      });
+    }
+
+    res.json({
+      message: `${pdfFiles.length} PDF फाइल(ें) प्राप्त हुईं और बैकग्राउंड में प्रोसेस हो रही हैं।`,
+      backgroundProcessing: true,
+      jobId: createdJobs[0]?.jobId,
+      jobs: createdJobs,
+      totalFiles: pdfFiles.length
     });
 
   } catch (error) {

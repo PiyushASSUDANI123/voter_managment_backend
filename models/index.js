@@ -146,16 +146,30 @@ const leadSchema = new mongoose.Schema({
 
 leadSchema.index({ status: 1, createdAt: -1 });
 
+const learnedDictionarySchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true },
+  value: { type: String, required: true },
+  type: { type: String, enum: ['glyph', 'word', 'name'], default: 'glyph' },
+  sourcePdf: { type: String, default: '' },
+  confidence: { type: Number, default: 1.0 },
+  createdAt: { type: Date, default: Date.now }
+});
+
+learnedDictionarySchema.index({ key: 1 });
+learnedDictionarySchema.index({ type: 1 });
+
 const Organization = mongoose.model('Organization', organizationSchema);
 const User = mongoose.model('User', userSchema);
 const Voter = mongoose.model('Voter', voterSchema);
 const SlipDispatch = mongoose.model('SlipDispatch', slipDispatchSchema);
 const Lead = mongoose.model('Lead', leadSchema);
+const LearnedDictionary = mongoose.model('LearnedDictionary', learnedDictionarySchema);
 
 module.exports = {
   Organization,
   User,
   Voter,
   SlipDispatch,
-  Lead
+  Lead,
+  LearnedDictionary
 };
