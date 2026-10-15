@@ -102,6 +102,7 @@ const ExcelJS = require('exceljs');
     let excelFilename = null;
 
     // 1. High-Performance Native Python Engine (if available)
+    let pythonErrorMsg = null;
     const pythonOk = await isPythonAvailable();
     console.log(`[pdfWorker] Python availability check: ${pythonOk}`);
     if (pythonOk) {
@@ -246,13 +247,19 @@ const ExcelJS = require('exceljs');
         }
       } catch (pyErr) {
         console.error("[pdfWorker] Python extraction FAILED:", pyErr.message, pyErr.stack);
+        pythonErrorMsg = `पायथन इंजन त्रुटि: ${pyErr.message}`;
         finalVoterList = [];
       }
+    } else {
+      pythonErrorMsg = 'सर्वर पर Python 3 या आवश्यक लाइब्रेरीज़ (pypdf, openpyxl) उपलब्ध नहीं हैं। कृपया pypdf व openpyxl इंस्टॉल करें।';
     }
 
     // OCR & AI repair fallbacks are completely disabled per user instruction
     // Direct native Python glyph engine provides 100% precision
     if (finalVoterList.length === 0) {
+      if (pythonErrorMsg) {
+        throw new Error(pythonErrorMsg);
+      }
       throw new Error(`PDF से मतदाता रिकॉर्ड नहीं निकाले जा सके। कृपया सुनिश्चित करें कि फ़ाइल एक मान्य निर्वाचन आयोग (SEC/ECI) मतदाता सूची है।`);
     }
 

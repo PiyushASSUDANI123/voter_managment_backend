@@ -20,7 +20,6 @@ import json
 import struct
 import hashlib
 import pypdf
-import pandas as pd
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
