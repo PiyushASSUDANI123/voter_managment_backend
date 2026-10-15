@@ -153,44 +153,60 @@ router.get('/family/:houseNo', verifyToken, requireModule('voters', 'community')
   try {
     const rawHouse = (req.params.houseNo || '').trim();
     const cleanHouse = rawHouse.replace(/^#/, '').trim();
+    const houseNum = Number.parseInt(cleanHouse, 10);
 
     const houseConditions = [
       { houseNo: rawHouse },
       { houseNo: cleanHouse },
-      { houseNo: `#${cleanHouse}` }
+      { houseNo: `#${cleanHouse}` },
+      { familyId: rawHouse },
+      { familyId: cleanHouse }
     ];
+    if (!Number.isNaN(houseNum)) {
+      houseConditions.push({ houseNo: houseNum });
+    }
 
     const andConditions = [{ $or: houseConditions }];
 
     if (typeof req.query.ward === 'string' && req.query.ward.trim()) {
       const rawWard = req.query.ward.trim();
       const cleanWard = rawWard.replace(/^(वार्ड|Ward)\s*/i, '').trim();
-      andConditions.push({
-        $or: [
-          { wardNo: rawWard },
-          { wardNo: cleanWard },
-          { wardNo: `Ward ${cleanWard}` },
-          { wardNo: `वार्ड ${cleanWard}` }
-        ]
-      });
+      const wardNum = Number.parseInt(cleanWard, 10);
+      const wardConditions = [
+        { wardNo: rawWard },
+        { wardNo: cleanWard },
+        { wardNo: `Ward ${cleanWard}` },
+        { wardNo: `वार्ड ${cleanWard}` }
+      ];
+      if (!Number.isNaN(wardNum)) {
+        wardConditions.push({ wardNo: wardNum });
+      }
+      andConditions.push({ $or: wardConditions });
     }
 
     if (typeof req.query.part === 'string' && req.query.part.trim()) {
       const rawPart = req.query.part.trim();
       const cleanPart = rawPart.replace(/^(भाग|Part)\s*/i, '').trim();
-      andConditions.push({
-        $or: [
-          { partNo: rawPart },
-          { partNo: cleanPart },
-          { partNo: `Part ${cleanPart}` },
-          { partNo: `भाग ${cleanPart}` }
-        ]
-      });
+      const partNum = Number.parseInt(cleanPart, 10);
+      const partConditions = [
+        { partNo: rawPart },
+        { partNo: cleanPart },
+        { partNo: `Part ${cleanPart}` },
+        { partNo: `भाग ${cleanPart}` }
+      ];
+      if (!Number.isNaN(partNum)) {
+        partConditions.push({ partNo: partNum });
+      }
+      andConditions.push({ $or: partConditions });
     }
 
-    query.$and = andConditions;
+    const query = addVoterAccess(req);
+    if (query.$and && Array.isArray(query.$and)) {
+      query.$and.push(...andConditions);
+    } else {
+      query.$and = andConditions;
+    }
 
-    
     const voters = await Voter.find(query).sort({ serialNo: 1 }).lean();
     const formattedVoters = voters.map((v) => ({
       ...v,
