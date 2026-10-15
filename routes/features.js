@@ -496,6 +496,10 @@ router.get('/export.xlsx', async (req, res) => {
       query.isMigrant = true;
     }
 
+    if (dataset === 'turnout') {
+      query.voted = false;
+    }
+
     if (dataset === 'community') {
       const searchString = typeof req.query.q === 'string' ? req.query.q.trim() : '';
       const terms = searchString.split(',').map((term) => term.trim()).filter(Boolean);

@@ -41,6 +41,179 @@ router.get('/all', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 
   }
 });
 
+// High-performance Turnout Summary using MongoDB Aggregation Pipeline + Cache
+router.get('/turnout-summary', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 'warroom'), async (req, res) => {
+  try {
+    const query = addVoterAccess(req);
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const cacheKey = `turnout_summary_${orgId}_${req.user.id}`;
+    
+    // Check Cache (instant response < 3ms)
+    const cachedData = cache.get(cacheKey);
+    if (cachedData) {
+      return res.json(cachedData);
+    }
+
+    const [aggregationResult] = await Voter.aggregate([
+      { $match: query },
+      {
+        $facet: {
+          overall: [
+            {
+              $group: {
+                _id: null,
+                totalVoters: { $sum: 1 },
+                totalVoted: { $sum: { $cond: [{ $eq: ['$voted', true] }, 1, 0] } },
+                maleVoted: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: ['$voted', true] },
+                          { $in: ['$gender', ['पुरुष', 'Male', 'M']] }
+                        ]
+                      },
+                      1,
+                      0
+                    ]
+                  }
+                },
+                femaleVoted: {
+                  $sum: {
+                    $cond: [
+                      {
+                        $and: [
+                          { $eq: ['$voted', true] },
+                          { $in: ['$gender', ['स्त्री', 'महिला', 'Female', 'F']] }
+                        ]
+                      },
+                      1,
+                      0
+                    ]
+                  }
+                }
+              }
+            }
+          ],
+          byWard: [
+            {
+              $group: {
+                _id: '$wardNo',
+                total: { $sum: 1 },
+                voted: { $sum: { $cond: [{ $eq: ['$voted', true] }, 1, 0] } }
+              }
+            }
+          ]
+        }
+      }
+    ]);
+
+    const overall = aggregationResult?.overall?.[0] || {
+      totalVoters: 0,
+      totalVoted: 0,
+      maleVoted: 0,
+      femaleVoted: 0
+    };
+
+    const wardSummaries = (aggregationResult?.byWard || [])
+      .filter((w) => w._id !== null && w._id !== undefined && String(w._id).trim() !== '')
+      .map((w) => ({
+        name: String(w._id),
+        total: w.total || 0,
+        voted: w.voted || 0
+      }))
+      .sort((a, b) => {
+        const numA = parseInt(a.name, 10);
+        const numB = parseInt(b.name, 10);
+        if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+        return String(a.name).localeCompare(String(b.name));
+      });
+
+    const totalVoters = overall.totalVoters || 0;
+    const totalVoted = overall.totalVoted || 0;
+    const remaining = Math.max(0, totalVoters - totalVoted);
+    const turnout = totalVoters > 0 ? Math.round((totalVoted / totalVoters) * 100) : 0;
+
+    const result = {
+      totalVoters,
+      totalVoted,
+      remaining,
+      turnout,
+      maleVoted: overall.maleVoted || 0,
+      femaleVoted: overall.femaleVoted || 0,
+      wardSummaries,
+      updatedAt: new Date().toISOString()
+    };
+
+    // Cache for 60 seconds
+    cache.set(cacheKey, result, 60);
+
+    res.json(result);
+  } catch (err) {
+    console.error('Turnout summary query failed:', err.message);
+    res.status(500).json({ message: 'Turnout summary could not be loaded.' });
+  }
+});
+
+// High-performance Paginated Pending Voters for Turnout Desk
+router.get('/turnout-pending', verifyToken, requireModule('voters', 'poll-desk', 'turnout', 'warroom'), async (req, res) => {
+  try {
+    const { ward } = req.query;
+    const page = boundedInteger(req.query.page, 1, 100000);
+    const limit = boundedInteger(req.query.limit, 50, 100);
+    const skip = (page - 1) * limit;
+
+    const query = addVoterAccess(req);
+    query.voted = false;
+
+    if (typeof ward === 'string' && ward.trim()) {
+      query.wardNo = ward.trim();
+    }
+
+    const projection = {
+      _id: 1,
+      sqlId: 1,
+      epic: 1,
+      nameEn: 1,
+      nameHi: 1,
+      wardNo: 1,
+      partNo: 1,
+      serialNo: 1,
+      gender: 1,
+      mobileNo: 1,
+      supportStatus: 1,
+      voted: 1
+    };
+
+    const [total, rawVoters] = await Promise.all([
+      Voter.countDocuments(query),
+      Voter.find(query, projection)
+        .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
+        .skip(skip)
+        .limit(limit)
+        .lean()
+    ]);
+
+    const voters = rawVoters.map(formatVoter);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+
+    res.json({
+      voters,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+        hasPrev: page > 1,
+        hasNext: page < totalPages
+      }
+    });
+  } catch (err) {
+    console.error('Turnout pending voters query failed:', err.message);
+    res.status(500).json({ message: 'Turnout pending voters could not be loaded.' });
+  }
+});
+
 // Get unique wards list with counts for current organization (Cached 5m)
 router.get('/wards-summary', verifyToken, requireModule('voters', 'community', 'poll-desk'), async (req, res) => {
   try {
@@ -301,6 +474,7 @@ router.put('/:id', verifyToken, (req, res, next) => {
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
     cache.delPrefix(`wards_summary_${orgKey}_`);
+    cache.delPrefix(`turnout_summary_${orgKey}_`);
 
     res.json(voter);
   } catch (err) {
@@ -333,6 +507,7 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     // Invalidate Cache for this organization
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`turnout_summary_${orgKey}_`);
     
     res.json({ success: true, message: 'Vote status updated.' });
   } catch (err) {
@@ -366,6 +541,7 @@ router.delete('/:id', verifyToken, async (req, res) => {
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
     cache.delPrefix(`wards_summary_${orgKey}_`);
+    cache.delPrefix(`turnout_summary_${orgKey}_`);
 
     res.json({ success: true, message: 'मतदाता सफलतापूर्वक डिलीट कर दिया गया।' });
   } catch (err) {
@@ -397,6 +573,7 @@ router.post('/bulk-delete', verifyToken, async (req, res) => {
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
     cache.delPrefix(`wards_summary_${orgKey}_`);
+    cache.delPrefix(`turnout_summary_${orgKey}_`);
 
     res.json({ success: true, message: `${result.deletedCount} मतदाता सफलतापूर्वक डिलीट कर दिए गए।`, deletedCount: result.deletedCount });
   } catch (err) {
