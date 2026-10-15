@@ -93,6 +93,9 @@ const voterSchema = new mongoose.Schema({
 // 🚀 Performance Optimization: Compound Indexes
 // Enables ultra-fast O(1) querying and memory-free indexed sorting across millions of records
 voterSchema.index({ organizationId: 1, wardNo: 1, partNo: 1, serialNo: 1 });
+voterSchema.index({ organizationId: 1, wardNo: 1, serialNo: 1 });
+voterSchema.index({ organizationId: 1, wardNo: 1, voted: 1, serialNo: 1 });
+voterSchema.index({ organizationId: 1, wardNo: 1, voted: 1 });
 voterSchema.index({ organizationId: 1, partNo: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, serialNo: 1 });
 voterSchema.index({ organizationId: 1, wardNo: 1 });
@@ -104,15 +107,23 @@ voterSchema.index({ organizationId: 1, epic: 1 });
 voterSchema.index({ organizationId: 1, nameHi: 1 });
 voterSchema.index({ organizationId: 1, mobileNo: 1 });
 voterSchema.index({ organizationId: 1, caste: 1 });
+voterSchema.index({ organizationId: 1, caste: 1, wardNo: 1 });
 voterSchema.index({ organizationId: 1, voted: 1 });
 voterSchema.index({ organizationId: 1, surety: 1 });
 voterSchema.index({ organizationId: 1, assignedWorker: 1 });
 voterSchema.index({ organizationId: 1, supportStatus: 1 });
+voterSchema.index({ organizationId: 1, supportStatus: 1, wardNo: 1 });
 voterSchema.index({ organizationId: 1, isMigrant: 1 });
+voterSchema.index({ organizationId: 1, isMigrant: 1, wardNo: 1, serialNo: 1 });
+
+// Organization Model Indexes
+organizationSchema.index({ isActive: 1, name: 1 });
+organizationSchema.index({ createdAt: -1 });
 
 // User Model Indexes
 userSchema.index({ organizationId: 1, role: 1 });
 userSchema.index({ organizationId: 1, isActive: 1 });
+userSchema.index({ organizationId: 1, role: 1, isActive: 1 });
 
 // 🚀 Performance Optimization: Text Search Index
 // Enables fast text searching across multiple name fields (English & Hindi)
@@ -138,7 +149,8 @@ const slipDispatchSchema = new mongoose.Schema({
 });
 
 slipDispatchSchema.index({ organizationId: 1, createdAt: -1 });
-slipDispatchSchema.index({ organizationId: 1, status: 1 });
+slipDispatchSchema.index({ organizationId: 1, status: 1, createdAt: -1 });
+slipDispatchSchema.index({ organizationId: 1, dispatchType: 1, createdAt: -1 });
 
 const leadSchema = new mongoose.Schema({
   _id: { type: String, required: true },

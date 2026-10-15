@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cache = require('../lib/cache');
 const { User, Organization, Voter } = require('../models/index');
 
 exports.register = async (req, res) => {
@@ -135,6 +136,10 @@ exports.login = async (req, res) => {
 exports.getClients = async (req, res) => {
   try {
     const isPlatformAdmin = req.user.role === 'admin';
+    const cacheKey = `clients_list_${isPlatformAdmin ? 'admin' : (req.user.organizationId || 'org')}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     if (isPlatformAdmin) {
       const orgs = await Organization.find({ isActive: { $ne: false }, _id: { $ne: 'org_default' } }).sort({ name: 1 }).lean();
       const orgIds = orgs.map((o) => o._id);
@@ -146,22 +151,22 @@ exports.getClients = async (req, res) => {
       voterCounts.forEach((vc) => {
         voterCountMap[vc._id] = vc.count;
       });
-      return res.json(
-        orgs.map((o) => ({
-          id: o._id,
-          name: o.name,
-          code: o.code,
-          candidateName: o.candidateName || '',
-          candidateParty: o.candidateParty || '',
-          voterCount: voterCountMap[o._id] || 0,
-          settings: o.settings || { hidePartNo: true },
-        }))
-      );
+      const responseData = orgs.map((o) => ({
+        id: o._id,
+        name: o.name,
+        code: o.code,
+        candidateName: o.candidateName || '',
+        candidateParty: o.candidateParty || '',
+        voterCount: voterCountMap[o._id] || 0,
+        settings: o.settings || { hidePartNo: true },
+      }));
+      cache.set(cacheKey, responseData, 120);
+      return res.json(responseData);
     } else {
       const org = await Organization.findById(req.user.organizationId).lean();
       if (!org) return res.json([]);
       const voterCount = await Voter.countDocuments({ organizationId: org._id });
-      return res.json([
+      const responseData = [
         {
           id: org._id,
           name: org.name,
@@ -171,7 +176,9 @@ exports.getClients = async (req, res) => {
           voterCount,
           settings: org.settings || { hidePartNo: true },
         },
-      ]);
+      ];
+      cache.set(cacheKey, responseData, 120);
+      return res.json(responseData);
     }
   } catch (err) {
     console.error('Failed to get clients:', err);

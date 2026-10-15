@@ -3,6 +3,7 @@ const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess, getEffectiveOrgId } = require('../lib/access');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
 const { Voter, Organization, SlipDispatch } = require('../models/index');
+const cache = require('../lib/cache');
 
 const router = express.Router();
 
@@ -202,48 +203,56 @@ router.get('/community', requireModule('community'), async (req, res) => {
     const ward = typeof req.query.ward === 'string' ? req.query.ward.trim() : '';
     const includeFamily = req.query.includeFamily !== 'false';
 
-    const matchQuery = addVoterAccess(req);
-    if (ward) {
-      matchQuery.wardNo = new RegExp(ward, 'i');
-    }
-    
-    const termsRegex = terms.map(t => new RegExp(t, 'i'));
-    const orConditions = [];
-    termsRegex.forEach(regex => {
-      orConditions.push({ caste: regex });
-      orConditions.push({ nameEn: regex });
-      orConditions.push({ nameHi: regex });
-      orConditions.push({ relativeNameEn: regex });
-      orConditions.push({ relativeNameHi: regex });
-    });
-    
-    matchQuery.$or = orConditions;
+    const targetOrgId = getEffectiveOrgId(req) || 'org_default';
+    const cacheKey = `community_${targetOrgId}_w${ward || 'all'}_f${includeFamily}_q${encodeURIComponent(searchString)}`;
+    let finalVoters = cache.get(cacheKey);
 
-    // First find matched voters
-    const matchedVoters = await Voter.find(matchQuery).lean();
-    
-    let finalVoters = matchedVoters;
-    if (includeFamily) {
-      const familyIds = [...new Set(matchedVoters.map(v => v.familyId).filter(Boolean))];
-      if (familyIds.length > 0) {
-        const accessQuery = addVoterAccess(req);
-        accessQuery.familyId = { $in: familyIds };
-        const familyVoters = await Voter.find(accessQuery).lean();
-        
-        // Merge without duplicates
-        const voterMap = new Map();
-        familyVoters.forEach(v => voterMap.set(v._id.toString(), v));
-        matchedVoters.forEach(v => voterMap.set(v._id.toString(), v));
-        finalVoters = Array.from(voterMap.values());
+    if (!finalVoters) {
+      const matchQuery = addVoterAccess(req);
+      if (ward) {
+        matchQuery.wardNo = new RegExp(ward, 'i');
       }
+      
+      const termsRegex = terms.map(t => new RegExp(t, 'i'));
+      const orConditions = [];
+      termsRegex.forEach(regex => {
+        orConditions.push({ caste: regex });
+        orConditions.push({ nameEn: regex });
+        orConditions.push({ nameHi: regex });
+        orConditions.push({ relativeNameEn: regex });
+        orConditions.push({ relativeNameHi: regex });
+      });
+      
+      matchQuery.$or = orConditions;
+
+      // First find matched voters
+      const matchedVoters = await Voter.find(matchQuery).lean();
+      
+      finalVoters = matchedVoters;
+      if (includeFamily) {
+        const familyIds = [...new Set(matchedVoters.map(v => v.familyId).filter(Boolean))];
+        if (familyIds.length > 0) {
+          const accessQuery = addVoterAccess(req);
+          accessQuery.familyId = { $in: familyIds };
+          const familyVoters = await Voter.find(accessQuery).lean();
+          
+          // Merge without duplicates
+          const voterMap = new Map();
+          familyVoters.forEach(v => voterMap.set(v._id.toString(), v));
+          matchedVoters.forEach(v => voterMap.set(v._id.toString(), v));
+          finalVoters = Array.from(voterMap.values());
+        }
+      }
+      
+      // Sort
+      finalVoters.sort((a, b) => {
+        if (a.wardNo !== b.wardNo) return (a.wardNo || '').localeCompare(b.wardNo || '');
+        if (a.partNo !== b.partNo) return (a.partNo || '').localeCompare(b.partNo || '');
+        return (a.serialNo || 0) - (b.serialNo || 0);
+      });
+
+      cache.set(cacheKey, finalVoters, 180);
     }
-    
-    // Sort
-    finalVoters.sort((a, b) => {
-      if (a.wardNo !== b.wardNo) return (a.wardNo || '').localeCompare(b.wardNo || '');
-      if (a.partNo !== b.partNo) return (a.partNo || '').localeCompare(b.partNo || '');
-      return (a.serialNo || 0) - (b.serialNo || 0);
-    });
 
     const page = boundedNumber(req.query.page, 1, 1000);
     const pageSize = boundedNumber(req.query.pageSize, 100, 250);
@@ -293,21 +302,44 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
       }
     }
 
-    const [dispatches, allInScope] = await Promise.all([
-      SlipDispatch.find(query).sort({ createdAt: -1 }).limit(500).lean(),
-      SlipDispatch.find(query, { status: 1, dispatchType: 1, providerMessageId: 1 }).lean(),
+    const page = boundedNumber(req.query.page, 1, 100000);
+    const limit = boundedNumber(req.query.limit, 50, 200);
+
+    const [dispatches, totalCount, statusSummary] = await Promise.all([
+      SlipDispatch.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      SlipDispatch.countDocuments(query),
+      SlipDispatch.aggregate([
+        { $match: targetOrgId ? { organizationId: targetOrgId } : {} },
+        {
+          $group: {
+            _id: {
+              status: '$status',
+              dispatchType: '$dispatchType',
+              hasMsgId: { $ne: ['$providerMessageId', null] }
+            },
+            count: { $sum: 1 }
+          }
+        }
+      ])
     ]);
 
-    const summary = { total: allInScope.length, sent: 0, failed: 0, sending: 0, manual: 0 };
-    for (const row of allInScope) {
-      if (row.dispatchType === 'manual_whatsapp' || row.status === 'manual_link') {
-        summary.manual += 1;
-      } else if (row.status === 'sent' && (row.providerMessageId || row.dispatchType === 'whatsapp')) {
-        summary.sent += 1;
-      } else if (row.status === 'failed') {
-        summary.failed += 1;
-      } else if (row.status === 'sending') {
-        summary.sending += 1;
+    const summary = { total: 0, sent: 0, failed: 0, sending: 0, manual: 0 };
+    for (const group of statusSummary) {
+      const g = group._id || {};
+      const count = group.count || 0;
+      summary.total += count;
+      if (g.dispatchType === 'manual_whatsapp' || g.status === 'manual_link') {
+        summary.manual += count;
+      } else if (g.status === 'sent' && (g.hasMsgId || g.dispatchType === 'whatsapp')) {
+        summary.sent += count;
+      } else if (g.status === 'failed') {
+        summary.failed += count;
+      } else if (g.status === 'sending') {
+        summary.sending += count;
       }
     }
 
@@ -325,6 +357,12 @@ router.get('/dispatches', requireModule('history'), async (req, res) => {
         errorMessage: item.errorMessage || '',
         createdAt: item.createdAt,
       })),
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit) || 1
+      }
     });
   } catch (err) {
     console.error('Dispatch history query failed:', err.message);
@@ -533,8 +571,13 @@ router.get('/slip-config', async (req, res) => {
       const selected = req.headers['x-organization-id'] || req.headers['x-client-id'] || req.query?.organizationId;
       if (selected && selected !== 'all') orgId = selected;
     }
+
+    const cacheKey = `slip_config_${orgId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const org = await Organization.findById(orgId).lean();
-    res.json({
+    const configResult = {
       organizationId: orgId,
       organizationName: org?.name || 'Default Organization',
       slipConfig: org?.slipConfig || {
@@ -552,7 +595,9 @@ router.get('/slip-config', async (req, res) => {
         pollingStationFallback: '569 - सामुदायिक भवन, जाटा बास, महामंदिर, जोधपुर',
         wardPollingStations: {}
       }
-    });
+    };
+    cache.set(cacheKey, configResult, 600);
+    res.json(configResult);
   } catch (err) {
     res.status(500).json({ message: 'Failed to load slip config' });
   }
@@ -584,6 +629,7 @@ router.put('/slip-config', async (req, res) => {
       },
       { new: true, upsert: true }
     );
+    cache.del(`slip_config_${orgId}`);
     res.json({
       success: true,
       organizationId: orgId,

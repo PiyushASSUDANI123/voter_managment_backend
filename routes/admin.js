@@ -325,6 +325,10 @@ router.put('/organizations/:id/settings', verifyToken, async (req, res) => {
 router.get('/dashboard-stats', verifyToken, isAdmin, async (req, res) => {
   try {
     const { orgId } = req.query;
+    const cacheKey = `admin_dash_stats_${orgId || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     const filter = orgId && orgId !== 'all' ? { organizationId: orgId } : {};
 
     const [
@@ -384,7 +388,7 @@ router.get('/dashboard-stats', verifyToken, isAdmin, async (req, res) => {
       if (currentOrg?.settings) currentSettings = { ...currentSettings, ...currentOrg.settings };
     }
 
-    res.json({
+    const responsePayload = {
       success: true,
       stats: {
         totalVoters,
@@ -414,7 +418,9 @@ router.get('/dashboard-stats', verifyToken, isAdmin, async (req, res) => {
           ocrConfidence: '100.00%'
         }
       }
-    });
+    };
+    cache.set(cacheKey, responsePayload, 60);
+    res.json(responsePayload);
   } catch (err) {
     console.error('Failed to get dashboard stats:', err);
     res.status(500).json({ message: 'डैशबोर्ड डेटा लोड नहीं हो सका।' });
