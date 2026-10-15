@@ -74,7 +74,7 @@ router.get('/wards-summary', verifyToken, requireModule('voters', 'community', '
 // Get all voters (with search & pagination)
 router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'migrants'), async (req, res) => {
   try {
-    const { search, relative, ward, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
+    const { search, relative, ward, part, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
     const query = addVoterAccess(req);
 
     if (typeof search === 'string' && search.trim()) {
@@ -107,6 +107,7 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     }
     
     if (typeof ward === 'string' && ward.trim()) query.wardNo = new RegExp(ward.trim(), 'i');
+    if (typeof part === 'string' && part.trim()) query.partNo = new RegExp(part.trim().replace(/^(भाग|Part)\s*/i, ''), 'i');
     if (typeof house === 'string' && house.trim()) query.houseNo = new RegExp(house.trim(), 'i');
     if (isMigrant === 'true' || isMigrant === 'false') query.isMigrant = isMigrant === 'true';
     if (typeof supportStatus === 'string' && ['core', 'swing', 'opposition', 'unmarked'].includes(supportStatus)) {
