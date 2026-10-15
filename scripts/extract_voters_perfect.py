@@ -218,16 +218,29 @@ def parse_to_unicode_map(to_uni_obj):
     except Exception:
         return {}
     u_map = {}
+    
+    # 1. Parse beginbfrange blocks: <start> <end> <dest_hex>
     for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', u_data):
         s_code = int(m.group(1), 16)
         e_code = int(m.group(2), 16)
-        u_val = chr(int(m.group(3), 16))
+        hex_val = m.group(3)
+        u_chars = ''.join(chr(int(hex_val[i:i+4], 16)) for i in range(0, len(hex_val), 4))
         for c in range(s_code, e_code + 1):
-            u_map[c] = u_val
-    for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', u_data):
-        c_code = int(m.group(1), 16)
-        u_val = chr(int(m.group(2), 16))
-        u_map[c_code] = u_val
+            offset = c - s_code
+            if len(hex_val) == 4 and offset > 0:
+                u_map[c] = chr(int(hex_val, 16) + offset)
+            else:
+                u_map[c] = u_chars
+
+    # 2. Parse beginbfchar blocks strictly within beginbfchar...endbfchar
+    bfchar_match = re.search(r'beginbfchar(.*?)endbfchar', u_data, re.DOTALL)
+    if bfchar_match:
+        for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', bfchar_match.group(1)):
+            c_code = int(m.group(1), 16)
+            hex_val = m.group(2)
+            u_chars = ''.join(chr(int(hex_val[i:i+4], 16)) for i in range(0, len(hex_val), 4))
+            u_map[c_code] = u_chars
+
     return u_map
 
 # Dynamically merge learned dictionary on startup
@@ -569,7 +582,7 @@ def parse_pdf_stream_tokens(stream_str):
             items.append((round(x, 1), round(y, 1), curr_font, b_list))
     return items
 
-def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
+def extract_single_pdf(pdf_path, default_ward=None, default_part="52", include_deleted=False):
     reader = pypdf.PdfReader(pdf_path)
     bn = os.path.basename(pdf_path)
     
@@ -581,14 +594,14 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
         
     part_no = default_part or "52"
     
-    # 2. Extract Supplement Deletions (serials 283, 313, 377, 401 etc.)
+    # 2. Extract Supplement Deletions (serials marked E, S, R, O, Q across all supplement pages)
+    # E = Expired/Death, S = Shifted, R = Repeated, O/Q = Other/Disqualified
     deletions_serials = set()
-    for p_idx in range(max(0, len(reader.pages) - 4), len(reader.pages)):
+    for p_idx in range(max(0, len(reader.pages) - 8), len(reader.pages) - 1):
         p_txt = reader.pages[p_idx].extract_text() or ""
-        if 'विलोपन' in p_txt or 'घटक 2' in p_txt or 'जरलपपन' in p_txt:
-            del_matches = re.findall(r'[ERS]\s*(\d{1,3})', p_txt)
-            for dm in del_matches:
-                deletions_serials.add(int(dm))
+        matches = re.findall(r'(?:^|\s)([ESROQ])\s*(\d{1,4})(?:\s|$)', p_txt)
+        for mark, s_num in matches:
+            deletions_serials.add(int(s_num))
 
     current_village_hi = "कुम्हारों की ढाणी, मावा"
     VALID_VILLAGE_KEYWORDS = ['ढाणी', 'बास', 'बस्ती', 'रामदेवरा', 'मावा', 'रोड', 'स्टेशन', 'स्कूल', 'मोहल्ला', 'ग्राम']
@@ -742,6 +755,11 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part="52"):
                 rel_type = "पति" if "पति" in rel_t_hi else ("माता" if "माता" in rel_t_hi else "पिता")
                 gender = "स्त्री" if ("स्त्र" in gen_hi or rel_type == "पति") else "पुरुष"
                 status = "विलोपित" if s_num in deletions_serials else "सक्रिय"
+
+                # Filter out deleted voters when include_deleted is False (default)
+                # This guarantees that the exported active voter count matches the official Election Commission summary
+                if not include_deleted and s_num in deletions_serials:
+                    continue
 
                 voters_dict[s_num] = {
                     'क्रमांक': s_num,
@@ -1102,6 +1120,7 @@ if __name__ == "__main__":
     parser.add_argument("--template", default=None, help="Path to voter-import-template.xlsx")
     parser.add_argument("--ward", default=None, help="Override ward number")
     parser.add_argument("--part", "--booth", dest="part", default=None, help="Override part or booth number")
+    parser.add_argument("--include-deleted", action="store_true", help="Include deleted (विलोपित) voters in export (default: False)")
     args = parser.parse_args()
 
     # Determine target input
@@ -1126,7 +1145,7 @@ if __name__ == "__main__":
             out_path = os.path.join(os.path.dirname(pdf_file), f"{stem}.xlsx")
 
         print(f"\nProcessing Single PDF: {bn} ...")
-        rows = extract_single_pdf(pdf_file, default_ward=args.ward, default_part=args.part)
+        rows = extract_single_pdf(pdf_file, default_ward=args.ward, default_part=args.part, include_deleted=args.include_deleted)
         save_templated_voter_excel(rows, out_path, template_path=args.template)
         learned_g, learned_w = load_learned_dictionary()
         print(json.dumps({
@@ -1158,7 +1177,7 @@ if __name__ == "__main__":
                 out_path = os.path.join(pdf_dir, f"{stem}.xlsx")
 
             print(f"[{idx}/{len(pdf_files)}] Processing: {bn} ...")
-            rows = extract_single_pdf(pdf_file, default_ward=args.ward, default_part=args.part)
+            rows = extract_single_pdf(pdf_file, default_ward=args.ward, default_part=args.part, include_deleted=args.include_deleted)
             save_templated_voter_excel(rows, out_path, template_path=args.template)
             processed_count += 1
             total_voters += len(rows)
