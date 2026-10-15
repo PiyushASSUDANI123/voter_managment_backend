@@ -171,7 +171,7 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
         
         try {
           if (operations.length > 0) {
-            const CHUNK_SIZE = 500;
+            const CHUNK_SIZE = 2500;
             let processed = 0;
             for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
               const chunk = operations.slice(i, i + CHUNK_SIZE);

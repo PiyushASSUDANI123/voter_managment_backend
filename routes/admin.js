@@ -764,22 +764,32 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     }
 
     const uniqueBatch = [...new Map(batch.map((voter) => [voter.epic, voter])).values()];
-    const result = await Voter.bulkWrite(uniqueBatch.map((voter) => {
-      const { _id, ...updateData } = voter;
-      return {
-        updateOne: {
-          filter: { organizationId, epic: voter.epic },
-          collation: { locale: 'en', strength: 2 },
-          update: {
-            $set: updateData,
-            $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
+    
+    // 🚀 Scale to 100,000+ (1 Lakh) voters safely with chunked bulk writes
+    const CHUNK_SIZE = 2500;
+    let inserted = 0;
+    let updated = 0;
+    
+    for (let i = 0; i < uniqueBatch.length; i += CHUNK_SIZE) {
+      const chunk = uniqueBatch.slice(i, i + CHUNK_SIZE);
+      const ops = chunk.map((voter) => {
+        const { _id, ...updateData } = voter;
+        return {
+          updateOne: {
+            filter: { organizationId, epic: voter.epic },
+            collation: { locale: 'en', strength: 2 },
+            update: {
+              $set: updateData,
+              $setOnInsert: { _id: `voter_${crypto.randomUUID()}` },
+            },
+            upsert: true,
           },
-          upsert: true,
-        },
-      };
-    }), { ordered: false });
-    const inserted = result.upsertedCount || 0;
-    const updated = result.matchedCount || 0;
+        };
+      });
+      const chunkResult = await Voter.bulkWrite(ops, { ordered: false });
+      inserted += chunkResult.upsertedCount || 0;
+      updated += chunkResult.matchedCount || 0;
+    }
 
     // Clear cache
     const keys = cache.keys();

@@ -185,13 +185,13 @@ const ExcelJS = require('exceljs');
           const serialVal = rawSerial ? parseInt(rawSerial, 10) : null;
           const epic = cellVal(row, 'epic', 1);
           const rawName = cellVal(row, 'nameHi', 6);
-          const cleanName = cleanHindiText(rawName);
+          const cleanName = rawName ? String(rawName).trim() : '';
 
           // STRICT VALIDATION: Require authentic voter name
           if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
             const rawNameEn = cellVal(row, 'nameEn', 5);
             const rawRel = cellVal(row, 'relativeNameHi', 11);
-            let cleanRel = cleanHindiText(rawRel);
+            let cleanRel = rawRel ? String(rawRel).trim() : '';
             cleanRel = stripNameFromRelative(cleanName, cleanRel);
             const rawRelEn = cellVal(row, 'relativeNameEn', 10);
             const cleanH = cleanHouseNo(cellVal(row, 'houseNo', 12));
@@ -223,8 +223,8 @@ const ExcelJS = require('exceljs');
             finalVoterList.push({
               serialNo: serialVal || (finalVoterList.length + 1),
               epic: (epic && !epic.startsWith('VOTER_')) ? epic : (epic || `VOTER_${finalVoterList.length + 1}`),
-              nameHi: cleanName || rawName,
-              nameEn: rawNameEn || cleanName || rawName,
+              nameHi: cleanName,
+              nameEn: rawNameEn || cleanName,
               relativeNameHi: cleanRel.length >= 2 ? cleanRel : rawRel,
               relativeNameEn: rawRelEn || '',
               relationType: relType,
@@ -250,162 +250,10 @@ const ExcelJS = require('exceljs');
       }
     }
 
-    if (finalVoterList.length === 0 && useOcr) {
-
-      // 2. Fallback to Local JS OCR if Python engine was not executed
-      if (finalVoterList.length === 0) {
-        console.log(`Running visual JS OCR pipeline on ${filePath}...`);
-        const { fullText, extractedVoters } = await performLocalOCR(filePath, updateProgress);
-        
-        console.log(`OCR returned ${extractedVoters.length} parsed cards. Vector EPICs count: ${vectorEpics.length}`);
-
-        finalVoterList = extractedVoters
-          .filter(card => card.nameHi && card.nameHi !== 'मतदाता' && card.nameHi.length >= 2)
-          .map((card, idx) => {
-            let matchedEpic = card.epic;
-            if ((!matchedEpic || matchedEpic.length < 5) && vectorEpics[idx]) {
-              matchedEpic = vectorEpics[idx];
-            } else if (matchedEpic && !vectorEpics.includes(matchedEpic)) {
-              const closeVector = vectorEpics.find(ve => 
-                ve.slice(-6) === matchedEpic.slice(-6) ||
-                ve.replace(/[^0-9]/g, '') === matchedEpic.replace(/[^0-9]/g, '')
-              );
-              if (closeVector) matchedEpic = closeVector;
-            }
-
-            return {
-              ...card,
-              epic: matchedEpic || (vectorEpics[idx] || `VOTER_${idx + 1}`)
-            };
-          });
-      }
-
-    } else if (finalVoterList.length === 0) {
-      // FAST TEXT-BASED EXTRACTION
-      updateProgress(30);
-
-      // Check if text uses legacy encoding (KrutiDev, PUA, etc.)
-      if (isKrutiDevText(text)) {
-        console.log("Detected KrutiDev font encoding. Converting to Unicode Devanagari...");
-        text = convertKrutiDevToUnicode(text);
-      } else if (isPUAText(text)) {
-        console.log("Detected PUA (Private Use Area) font encoding. Converting to Unicode Devanagari...");
-        text = autoConvertText(text);
-      }
-
-      // Universal Age/Gender block splitter (including SEC variants)
-      const blocks = text.split(/((?:(?:आयु|आयू|आय|आजच)[:ः\s]*\d+[\s.,]*(?:लिंग|सलग|Sex)[:ः\s]*\S+|(?:लिंग|सलग|Sex)[:ः\s]*\S+))/i);
-      
-      for (let i = 0; i < blocks.length - 1; i += 2) {
-        const fullBlock = blocks[i] + " " + blocks[i + 1];
-        const lines = fullBlock.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-
-        let nameHi = "";
-        let relativeNameHi = "";
-        let relationType = "पिता";
-        let houseNo = "";
-        let age = null;
-        let genderVal = "अन्य";
-
-        for (const line of lines) {
-          if (/(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नरम)\s*[:ः\-]\s*(.+)/i.test(line) && !/क्षेत्र|संख्या एवं|विधानसभा/i.test(line)) {
-            const m = line.match(/(?:मतदाता\s*(?:का)?\s*)?(?:नाम|नरम)\s*[:ः\-]\s*(.+)/i);
-            if (m && !nameHi) {
-              nameHi = m[1].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
-            }
-          }
-          if (/(?:(पिता|पति|माता|अन्य|नपतर|पनत|मरतर)\s*(?:का|कर)?\s*(?:नाम|नरम|नरक))\s*[:ः\-]\s*(.+)/i.test(line)) {
-            const m = line.match(/(?:(पिता|पति|माता|अन्य|नपतर|पनत|मरतर)\s*(?:का|कर)?\s*(?:नाम|नरम|नरक))\s*[:ः\-]\s*(.+)/i);
-            if (m && !relativeNameHi) {
-              const r = m[1];
-              relationType = r === 'नपतर' ? 'पिता' : r === 'पनत' ? 'पति' : r === 'मरतर' ? 'माता' : r;
-              relativeNameHi = m[2].replace(/[a-zA-Z\d\u0966-\u096F]/g, '').replace(/[^\u0900-\u097F\s]/g, '').replace(/\s+/g, ' ').trim();
-            }
-          }
-          if (/^(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)/i.test(line)) {
-            const m = line.match(/^(?:मकान\s*संख्या|गृह\s*संख्या)\s*[:ः\-]?\s*(.+)/i);
-            if (m && !houseNo) {
-              houseNo = m[1].replace(/(?:मकान|संख्या|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति)+/gi, '').replace(/[^\w\d\/\-]/g, '').trim();
-            }
-          }
-          if (/आयु\s*[:ः\-]?\s*(\d+)/i.test(line)) {
-            const m = line.match(/आयु\s*[:ः\-]?\s*(\d+)/i);
-            if (m && age === null) {
-              const parsedAge = parseInt(m[1], 10);
-              if (!isNaN(parsedAge) && parsedAge >= 18 && parsedAge <= 125) {
-                age = parsedAge;
-              }
-            }
-          }
-          if (/लिंग\s*[:ः\-]?\s*([^\s\n\r]+)/i.test(line)) {
-            const m = line.match(/लिंग\s*[:ः\-]?\s*([^\s\n\r]+)/i);
-            if (m) {
-              const g = m[1];
-              if (g.includes("पुरूष") || g.includes("पुरुष") || g.includes("पु")) genderVal = "पुरुष";
-              else if (g.includes("स्त्री") || g.includes("महिला") || g.includes("स्")) genderVal = "स्त्री";
-            }
-          }
-        }
-
-        const epicM = fullBlock.match(/([A-Z]{3}[0-9]{7}|[A-Z]{2,3}[\/\-]\d{2}[\/\-]\d{2,3}[\/\-]\d{4,6}|[A-Z0-9]{10})/i);
-        const cardEpic = epicM ? epicM[1].replace(/\s+/g, '').toUpperCase() : (vectorEpics[finalVoterList.length] || "");
-
-        const cleanName = cleanHindiText(nameHi);
-        if (cleanName && cleanName !== 'मतदाता' && cleanName.length >= 2) {
-          if (relationType === 'पति' || ['देवी', 'कुमारी', 'बाई', 'बेगम', 'कंवर', 'श्रीमती'].some(fem => cleanName.includes(fem))) {
-            genderVal = 'स्त्री';
-          }
-
-          const cleanRel = stripNameFromRelative(cleanName, relativeNameHi);
-
-          finalVoterList.push({
-            epic: cardEpic || `VOTER_${finalVoterList.length + 1}`,
-            nameHi: cleanName,
-            relativeNameHi: cleanRel.length >= 2 ? cleanRel : '',
-            relationType,
-            houseNo,
-            age,
-            gender: genderVal,
-            status: /DELETED|ELETED|विलोपित/i.test(fullBlock) ? "Deleted" : "Active"
-          });
-        }
-      }
-    }
-
-    if (!usedPythonEngine) {
-      updateProgress(55);
-
-      // Pillar 8: Groq / OpenRouter AI Fallback ONLY if fallback text parser was used
-      const needyCards = finalVoterList.filter(v => needsAiRepair(v)).slice(0, 60);
-      if (needyCards.length > 0) {
-        await Promise.allSettled(needyCards.map(async (v) => {
-          try {
-            const cardHint = `नाम: ${v.nameHi || ''}, मकान: ${v.houseNo || ''}, आयु: ${v.age || ''}, लिंग: ${v.gender || ''}`;
-            await Promise.race([
-              repairVoterCardGroq(cardHint, v),
-              new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
-            ]);
-            if (needsAiRepair(v)) {
-              await Promise.race([
-                repairVoterCardJs(cardHint, v),
-                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
-              ]);
-            }
-          } catch {}
-        }));
-      }
-
-      if (finalVoterList.length > 0) {
-        updateProgress(78, '🤖 Groq AI द्वारा सभी नामों और डेटा का पुनर्सत्यापन...');
-        try {
-          finalVoterList = await reverifyVotersListGroq(finalVoterList, (pct, msg) => {
-            const currentP = 78 + Math.round(pct * 0.08);
-            updateProgress(Math.min(currentP, 85), msg);
-          });
-        } catch (revErr) {
-          console.warn('[pdfWorker] Groq reverification notice:', revErr.message);
-        }
-      }
+    // OCR & AI repair fallbacks are completely disabled per user instruction
+    // Direct native Python glyph engine provides 100% precision
+    if (finalVoterList.length === 0) {
+      throw new Error(`PDF से मतदाता रिकॉर्ड नहीं निकाले जा सके। कृपया सुनिश्चित करें कि फ़ाइल एक मान्य निर्वाचन आयोग (SEC/ECI) मतदाता सूची है।`);
     }
 
     // Assign generated Excel path (Python engine output is the primary source of truth)
