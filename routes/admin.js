@@ -824,6 +824,37 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       updated += chunkResult.matchedCount || 0;
     }
 
+    // 🚀 AUTOMATIC ROLL SYNCHRONIZATION FOR EXCEL IMPORT
+    try {
+      const activeSerialsByWard = new Map();
+      for (const voter of uniqueBatch) {
+        const vWard = String(voter.wardNo || defaultWardNo || '').trim();
+        const vPart = String(voter.partNo || defaultBoothNo || '').trim();
+        const vSerial = voter.serialNo ? parseInt(voter.serialNo, 10) : null;
+        if (vWard && vSerial) {
+          const key = `${vWard}_${vPart}`;
+          if (!activeSerialsByWard.has(key)) {
+            activeSerialsByWard.set(key, { wardNo: vWard, partNo: vPart, serials: new Set() });
+          }
+          activeSerialsByWard.get(key).serials.add(vSerial);
+        }
+      }
+      for (const { wardNo: wNo, partNo: pNo, serials } of activeSerialsByWard.values()) {
+        const cleanupFilter = {
+          organizationId: organizationId,
+          wardNo: wNo,
+          serialNo: { $nin: Array.from(serials) }
+        };
+        if (pNo) cleanupFilter.partNo = pNo;
+        const delRes = await Voter.deleteMany(cleanupFilter);
+        if (delRes.deletedCount > 0) {
+          console.log(`[admin] Excel import synchronized Ward ${wNo}: Removed ${delRes.deletedCount} stale/deleted records.`);
+        }
+      }
+    } catch (cleanErr) {
+      console.warn('[admin] Excel roll synchronization cleanup warning:', cleanErr.message);
+    }
+
     // Clear cache immediately
     cache.flushAll();
 

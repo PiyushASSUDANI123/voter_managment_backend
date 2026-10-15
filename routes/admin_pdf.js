@@ -291,7 +291,37 @@ router.post('/upload', verifyToken, isAdmin, (req, res, next) => {
                   ...uploadJobs.get(jobId), 
                   progress: 88 + dbProgress,
                   stageMessage: `💾 सत्यापित डेटा डेटाबेस में सुरक्षित हो रहा है (${processed}/${operations.length})...`
-                });
+              }
+
+              // 🚀 AUTOMATIC WARD ROLL SYNCHRONIZATION:
+              // Remove any stale or deleted serials from previous uploads that are no longer active in this roll.
+              // This guarantees the database count matches the uploaded PDF 100% even if re-uploaded without deleting first.
+              try {
+                const activeSerialsByWard = new Map();
+                for (const op of operations) {
+                  const f = op.updateOne?.filter;
+                  if (f && f.wardNo && f.serialNo) {
+                    const key = `${f.wardNo}_${f.partNo || ''}`;
+                    if (!activeSerialsByWard.has(key)) {
+                      activeSerialsByWard.set(key, { wardNo: f.wardNo, partNo: f.partNo, serials: new Set() });
+                    }
+                    activeSerialsByWard.get(key).serials.add(f.serialNo);
+                  }
+                }
+                for (const { wardNo: wNo, partNo: pNo, serials } of activeSerialsByWard.values()) {
+                  const cleanupFilter = {
+                    organizationId: organizationId,
+                    wardNo: wNo,
+                    serialNo: { $nin: Array.from(serials) }
+                  };
+                  if (pNo) cleanupFilter.partNo = pNo;
+                  const delRes = await Voter.deleteMany(cleanupFilter);
+                  if (delRes.deletedCount > 0) {
+                    console.log(`[admin_pdf] Synchronized Ward ${wNo}: Removed ${delRes.deletedCount} stale/deleted records from previous uploads.`);
+                  }
+                }
+              } catch (cleanErr) {
+                console.warn('[admin_pdf] Ward synchronization cleanup warning:', cleanErr.message);
               }
             }
 
