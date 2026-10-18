@@ -509,6 +509,8 @@ router.put('/organizations/:id/slip-config', verifyToken, async (req, res) => {
       },
       { new: true, upsert: true }
     );
+    cache.del?.(`slip_config_${req.params.id}`);
+    cache.delPrefix?.('slip_config_');
     res.json({ success: true, slipConfig: updated?.slipConfig || {} });
   } catch (err) {
     res.status(500).json({ message: 'Could not update slip configuration.' });
