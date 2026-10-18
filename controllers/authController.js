@@ -159,6 +159,7 @@ exports.getClients = async (req, res) => {
         candidateParty: o.candidateParty || '',
         voterCount: voterCountMap[o._id] || 0,
         settings: o.settings || { hidePartNo: true },
+        customCastes: o.customCastes || o.settings?.customCastes || [],
       }));
       cache.set(cacheKey, responseData, 120);
       return res.json(responseData);
@@ -175,6 +176,7 @@ exports.getClients = async (req, res) => {
           candidateParty: org.candidateParty || '',
           voterCount,
           settings: org.settings || { hidePartNo: true },
+          customCastes: org.customCastes || org.settings?.customCastes || [],
         },
       ];
       cache.set(cacheKey, responseData, 120);

@@ -24,6 +24,10 @@ const organizationSchema = new mongoose.Schema({
       hidePartNo: true
     }
   },
+  customCastes: {
+    type: [String],
+    default: []
+  },
   isDemo: { type: Boolean, default: false },
   demoPassword: { type: String, default: null },
   district: { type: String, default: '' },

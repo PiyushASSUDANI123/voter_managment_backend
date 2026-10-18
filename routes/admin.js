@@ -95,6 +95,7 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
         district: o.district || '',
         ulbPanchayatSamiti: o.ulbPanchayatSamiti || '',
         ulbWardGramPanchayat: o.ulbWardGramPanchayat || '',
+        customCastes: o.customCastes || o.settings?.customCastes || [],
       };
     }));
     
@@ -274,14 +275,69 @@ router.put('/organizations/:id', verifyToken, isAdmin, async (req, res) => {
     if (req.body.settings && typeof req.body.settings === 'object') {
       updatePayload.settings = req.body.settings;
     }
+    if (Array.isArray(req.body.customCastes)) {
+      const cleaned = req.body.customCastes.map((c) => String(c).trim()).filter(Boolean);
+      updatePayload.customCastes = cleaned;
+      if (!updatePayload.settings) updatePayload.settings = {};
+      updatePayload.settings.customCastes = cleaned;
+    }
 
-    const org = await Organization.findByIdAndUpdate(req.params.id, updatePayload);
+    const org = await Organization.findByIdAndUpdate(req.params.id, updatePayload, { new: true });
     
     if (!org) return res.status(404).json({ message: 'Organization not found.' });
-    res.json({ success: true, message: 'Organization updated.' });
+    cache.flushAll?.();
+    res.json({ success: true, message: 'Organization updated.', customCastes: org.customCastes || [] });
   } catch (err) {
     console.error('Organization update failed:', err.message);
     res.status(500).json({ message: 'Could not update organization.' });
+  }
+});
+
+// Dedicated endpoints to get and update custom castes for an organization
+router.get('/organizations/:id/custom-castes', verifyToken, async (req, res) => {
+  try {
+    const org = await Organization.findById(req.params.id).lean();
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+    res.json({
+      success: true,
+      organizationId: org._id,
+      organizationName: org.name,
+      customCastes: org.customCastes || org.settings?.customCastes || [],
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Could not fetch custom castes.' });
+  }
+});
+
+router.put('/organizations/:id/custom-castes', verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenant_admin') {
+      return res.status(403).json({ message: 'केवल एडमिन ही जाति सूची बदल सकते हैं।' });
+    }
+    const incomingCastes = req.body.customCastes;
+    if (!Array.isArray(incomingCastes)) {
+      return res.status(400).json({ message: 'कस्टम जाति सूची एक array होनी चाहिए।' });
+    }
+    const cleaned = incomingCastes.map((c) => String(c).trim()).filter(Boolean);
+    const org = await Organization.findById(req.params.id);
+    if (!org) return res.status(404).json({ message: 'संगठन नहीं मिला।' });
+
+    org.customCastes = cleaned;
+    if (!org.settings) org.settings = {};
+    org.settings.customCastes = cleaned;
+    org.markModified('settings');
+    org.markModified('customCastes');
+    await org.save();
+
+    cache.flushAll?.();
+    res.json({
+      success: true,
+      customCastes: cleaned,
+      message: `${org.name} के लिए ${cleaned.length} जातियां सफलतापूर्वक सेव कर दी गईं।`,
+    });
+  } catch (err) {
+    console.error('Custom castes update error:', err.message);
+    res.status(500).json({ message: 'जाति सूची सेव नहीं हो सकी।' });
   }
 });
 
