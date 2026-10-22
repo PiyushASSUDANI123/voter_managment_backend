@@ -368,6 +368,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None):
 
                 epic_no = ""
                 house_no = ""
+                house_no_tokens = []
                 age_val = 30
                 name_hashes = []
                 rel_hashes = []
@@ -399,12 +400,12 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None):
                             elif f == '/a' and ' ' in ''.join(chr(c) for c in b): rel_hashes.append('SPACE')
 
                     # House No line
-                    elif sy - 48.5 <= y <= sy - 32.0 and f != '/9':
-                        c_cand = re.sub(r'^[ :ः\.\-]+', '', txt).strip()
-                        c_cand = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|सपखसर|गृह|house|no)[:ः\.\-\s]*', '', c_cand, flags=re.I).strip()
-                        c_cand = re.sub(r'[,:ः\.\s]+$', '', c_cand).strip()
-                        if c_cand and any(ch.isdigit() for ch in c_cand) and not any(k in c_cand for k in ['Photo', 'EPIC', 'RJ/', 'VOTER']):
-                            house_no = c_cand
+                    elif sy - 48.5 <= y <= sy - 32.0:
+                        if cb_x + 48.0 <= x <= cb_x + 120.0:
+                            if f == '/9':
+                                house_no_tokens.append((x, decode_hashes_to_hindi([ch_hash.get(c, '') for c in b])))
+                            else:
+                                house_no_tokens.append((x, txt))
 
                     # Age & Gender line
                     elif sy - 58.0 <= y <= sy - 49.0:
@@ -416,6 +417,18 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None):
                                 age_val = 20 + p_age
                         elif f == '/9' and x >= cb_x + 70.0:
                             gen_hashes.extend([ch_hash.get(c, '') for c in b])
+
+                if house_no_tokens:
+                    house_no_tokens.sort(key=lambda it: it[0])
+                    raw_hn = ' '.join(t[1] for t in house_no_tokens if t[1]).strip()
+                    raw_hn = re.sub(r'^[ :ः\.\-]+', '', raw_hn).strip()
+                    raw_hn = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|सपखसर|गृह|house|no)[:ः\.\-\s]*', '', raw_hn, flags=re.I).strip()
+                    raw_hn = re.sub(r'[,:ः\.\s]+$', '', raw_hn).strip()
+                    raw_hn = re.sub(r'\s+', ' ', raw_hn)
+                    raw_hn = re.sub(r'(\d)\s+([क-हए-औA-Za-z])(?!\w)', r'\1\2', raw_hn)
+                    raw_hn = re.sub(r'\s*-\s*', '-', raw_hn)
+                    if raw_hn and not any(k in raw_hn for k in ['Photo', 'EPIC', 'RJ/', 'VOTER']):
+                        house_no = raw_hn
 
                 name_hi = decode_hashes_to_hindi(name_hashes)
                 rel_hi = decode_hashes_to_hindi(rel_hashes)

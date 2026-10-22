@@ -195,7 +195,8 @@ const ExcelJS = require('exceljs');
             let cleanRel = rawRel ? String(rawRel).trim() : '';
             cleanRel = stripNameFromRelative(cleanName, cleanRel);
             const rawRelEn = cellVal(row, 'relativeNameEn', 10);
-            const cleanH = cleanHouseNo(cellVal(row, 'houseNo', 12));
+            const rawH = cellVal(row, 'houseNo', 12);
+            const cleanH = rawH && rawH !== '-' ? cleanHouseNo(rawH) : '-';
             
             const rawAge = cellVal(row, 'age', 7);
             let ageVal = rawAge ? parseInt(rawAge, 10) : null;
@@ -230,7 +231,7 @@ const ExcelJS = require('exceljs');
               relativeNameHi: cleanRel.length >= 2 ? cleanRel : rawRel,
               relativeNameEn: cleanRel.length >= 2 ? cleanRel : rawRel, // Pure Hindi data only
               relationType: relType,
-              houseNo: cleanH || cellVal(row, 'houseNo', 12),
+              houseNo: cleanH || rawH || '-',
               age: ageVal,
               gender: genderVal,
               status: statusVal,
@@ -308,7 +309,8 @@ const ExcelJS = require('exceljs');
           relativeNameHi: voter.relativeNameHi,
           relativeNameEn: voter.relativeNameHi || '', // Pure Hindi data only
           relationType: voter.relationType,
-          houseNo: voter.houseNo,
+          houseNo: voter.houseNo || '-',
+          houseNoHi: voter.houseNo || '-',
           age: voter.age,
           gender: voter.gender,
           status: voterStatus,
