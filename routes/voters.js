@@ -11,6 +11,8 @@ const boundedInteger = (value, fallback, maximum) => {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
 };
 
+const escapeRegex = (value) => (typeof value === 'string' ? value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '');
+
 const buildWardFilterCondition = (ward) => {
   if (typeof ward !== 'string' || !ward.trim()) return null;
   const rawWard = ward.trim();
@@ -290,11 +292,11 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
     const query = addVoterAccess(req);
     applyWardFilter(query, ward);
     if (typeof part === 'string' && part.trim()) {
-      query.partNo = new RegExp(`^${part.trim().replace(/^(भाग|Part)\s*/i, '')}$`, 'i');
+      query.partNo = new RegExp(`^${escapeRegex(part.trim().replace(/^(भाग|Part)\s*/i, ''))}$`, 'i');
     }
     if (typeof search === 'string' && search.trim()) {
       const q = search.trim();
-      const searchRegex = new RegExp(q, 'i');
+      const searchRegex = new RegExp(escapeRegex(q), 'i');
       query.$or = [
         { houseNo: searchRegex },
         { nameHi: searchRegex },
@@ -397,14 +399,15 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
 
     if (typeof search === 'string' && search.trim()) {
       const trimmed = search.trim();
-      const searchRegex = new RegExp(trimmed, 'i');
+      const escaped = escapeRegex(trimmed);
+      const searchRegex = new RegExp(escaped, 'i');
       query.$or = [
         { nameHi: searchRegex },
         { nameEn: searchRegex },
         { epic: searchRegex },
         { relativeNameHi: searchRegex },
         { relativeNameEn: searchRegex },
-        { houseNo: trimmed },
+        { houseNo: searchRegex },
         { mobileNo: searchRegex }
       ];
 
@@ -415,7 +418,8 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     }
     
     if (typeof relative === 'string' && relative.trim()) {
-      const relativeRegex = new RegExp(relative.trim(), 'i');
+      const escapedRelative = escapeRegex(relative.trim());
+      const relativeRegex = new RegExp(escapedRelative, 'i');
       if (query.$or) {
         query.$and = [{ $or: query.$or }, { $or: [{ relativeNameHi: relativeRegex }, { relativeNameEn: relativeRegex }] }];
         delete query.$or;
@@ -425,14 +429,17 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     }
     
     applyWardFilter(query, ward);
-    if (typeof part === 'string' && part.trim()) query.partNo = new RegExp(part.trim().replace(/^(भाग|Part)\s*/i, ''), 'i');
-    if (typeof house === 'string' && house.trim()) query.houseNo = new RegExp(house.trim(), 'i');
+    if (typeof part === 'string' && part.trim()) {
+      const cleanPart = escapeRegex(part.trim().replace(/^(भाग|Part)\s*/i, ''));
+      query.partNo = new RegExp(`^${cleanPart}$`, 'i');
+    }
+    if (typeof house === 'string' && house.trim()) query.houseNo = new RegExp(escapeRegex(house.trim()), 'i');
     if (isMigrant === 'true' || isMigrant === 'false') query.isMigrant = isMigrant === 'true';
     if (typeof supportStatus === 'string' && ['core', 'swing', 'opposition', 'unmarked'].includes(supportStatus)) {
       query.supportStatus = supportStatus;
     }
-    if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(caste.trim(), 'i');
-    if (typeof assignedWorker === 'string' && assignedWorker.trim()) query.assignedWorker = new RegExp(assignedWorker.trim(), 'i');
+    if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(escapeRegex(caste.trim()), 'i');
+    if (typeof assignedWorker === 'string' && assignedWorker.trim()) query.assignedWorker = new RegExp(escapeRegex(assignedWorker.trim()), 'i');
 
     const isAll = req.query.all === 'true' || req.query.all === '1';
     const page = boundedInteger(req.query.page, 1, 100000);
