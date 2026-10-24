@@ -13,6 +13,103 @@ const boundedInteger = (value, fallback, maximum) => {
 
 const escapeRegex = (value) => (typeof value === 'string' ? value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '');
 
+const COMMON_SEARCH_MAPPINGS = {
+  'bu': ['बु', 'बू', 'ब'],
+  'bud': ['बुध', 'बुद', 'बूध'],
+  'budh': ['बुध', 'बूध'],
+  'budha': ['बुधा'],
+  'budhar': ['बुधार'],
+  'budharam': ['बुधाराम', 'बुधा राम'],
+  'ra': ['रा', 'र'],
+  'ram': ['राम'],
+  'ramesh': ['रमेश'],
+  'kam': ['कम', 'काम'],
+  'kamal': ['कमल'],
+  'kamlesh': ['कमलेश'],
+  'su': ['सु', 'सू'],
+  'sur': ['सुर', 'सूर'],
+  'suresh': ['सुरेश'],
+  'vi': ['वि', 'वी'],
+  'vik': ['विक', 'वीक'],
+  'vikas': ['विकास'],
+  'mu': ['मु', 'मू'],
+  'muk': ['मुक'],
+  'mukesh': ['मुकेश'],
+  'om': ['ओम'],
+  'omprakash': ['ओमप्रकाश', 'ओम प्रकाश'],
+  'si': ['सी', 'सि'],
+  'singh': ['सिंह'],
+  'sita': ['सीता'],
+  'geeta': ['गीता'],
+  'pooja': ['पूजा'],
+  'puja': ['पूजा'],
+  'kalu': ['कालू', 'कलु'],
+  'kaluram': ['कालूराम', 'कालू राम'],
+  'ashok': ['अशोक'],
+  'sunil': ['सुनील'],
+  'anil': ['अनिल'],
+  'manoj': ['मनोज'],
+  'sanjay': ['संजय'],
+  'santosh': ['संतोष'],
+  'vijay': ['विजय'],
+  'ajay': ['अजय'],
+  'devi': ['देवी'],
+  'bai': ['बाई'],
+  'kanwar': ['कंवर'],
+  'lal': ['लाल'],
+  'kumar': ['कुमार'],
+  'kumari': ['कुमारी'],
+  'chaudhary': ['चौधरी'],
+  'choudhary': ['चौधरी'],
+  'shyam': ['श्याम'],
+  'shanti': ['शान्ति', 'शांति'],
+  'sohan': ['सोहन'],
+  'mohan': ['मोहन'],
+  'bhanwar': ['भंवर'],
+  'tejaram': ['तेजाराम', 'तेजा राम'],
+  'jetharam': ['जेठाराम', 'जेठा राम']
+};
+
+const SOUND_MAP = {
+  'chh': 'छ', 'kh': 'ख', 'gh': 'घ', 'ch': 'च', 'jh': 'झ',
+  'th': 'थ', 'dh': 'ध', 'ph': 'फ', 'bh': 'भ', 'sh': 'श',
+  'tr': 'त्र', 'gy': 'ज्ञ', 'shr': 'श्र', 'ksh': 'क्ष',
+  'k': 'क', 'g': 'ग', 'j': 'ज', 't': 'त', 'd': 'द',
+  'n': 'न', 'p': 'प', 'f': 'फ', 'b': 'ब', 'm': 'म',
+  'y': 'य', 'r': 'र', 'l': 'ल', 'v': 'व', 'w': 'व',
+  's': 'स', 'h': 'ह', 'z': 'ज़', 'q': 'क', 'x': 'क्स', 'c': 'क'
+};
+const VOWEL_MAP = {
+  'oo': 'ू', 'ee': 'ी', 'ai': 'ै', 'au': 'ौ', 'ou': 'ौ',
+  'aa': 'ा', 'a': 'ा', 'i': 'ि', 'u': 'ु', 'e': 'े', 'o': 'ो'
+};
+
+const getHindiPhoneticCandidates = (query) => {
+  if (!query || typeof query !== 'string') return [];
+  const clean = query.trim().toLowerCase();
+  if (!clean || /[\u0900-\u097F]/.test(clean)) return []; // already Hindi or empty
+  if (/^[a-z]{2,4}\d{4,8}$/i.test(clean) || /^\d+$/.test(clean)) return []; // EPIC or numbers
+
+  if (COMMON_SEARCH_MAPPINGS[clean]) return COMMON_SEARCH_MAPPINGS[clean];
+
+  const tokens = [];
+  let i = 0;
+  while (i < clean.length) {
+    const s3 = clean.slice(i, i + 3);
+    if (SOUND_MAP[s3]) { tokens.push(SOUND_MAP[s3]); i += 3; continue; }
+    const s2 = clean.slice(i, i + 2);
+    if (SOUND_MAP[s2]) { tokens.push(SOUND_MAP[s2]); i += 2; continue; }
+    if (VOWEL_MAP[s2]) { tokens.push(VOWEL_MAP[s2]); i += 2; continue; }
+    const s1 = clean.charAt(i);
+    if (SOUND_MAP[s1]) { tokens.push(SOUND_MAP[s1]); i += 1; continue; }
+    if (VOWEL_MAP[s1]) { tokens.push(VOWEL_MAP[s1]); i += 1; continue; }
+    tokens.push(s1);
+    i++;
+  }
+  const assembled = tokens.join('');
+  return assembled ? [assembled] : [];
+};
+
 const buildWardFilterCondition = (ward) => {
   if (typeof ward !== 'string' || !ward.trim()) return null;
   const rawWard = ward.trim();
@@ -303,6 +400,10 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
         { nameEn: searchRegex },
         { epic: searchRegex }
       ];
+      const phoneticCandidates = getHindiPhoneticCandidates(q);
+      for (const cand of phoneticCandidates) {
+        query.$or.push({ nameHi: new RegExp(escapeRegex(cand), 'i') });
+      }
     }
 
     const orgId = query.organizationId || req.user.organizationId || 'org_default';
@@ -411,6 +512,13 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
         { mobileNo: searchRegex }
       ];
 
+      const phoneticCandidates = getHindiPhoneticCandidates(trimmed);
+      for (const cand of phoneticCandidates) {
+        const candRegex = new RegExp(escapeRegex(cand), 'i');
+        query.$or.push({ nameHi: candRegex });
+        query.$or.push({ relativeNameHi: candRegex });
+      }
+
       const parsedSerial = Number.parseInt(trimmed, 10);
       if (!Number.isNaN(parsedSerial) && String(parsedSerial) === trimmed) {
         query.$or.push({ serialNo: parsedSerial });
@@ -420,11 +528,17 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     if (typeof relative === 'string' && relative.trim()) {
       const escapedRelative = escapeRegex(relative.trim().slice(0, 100));
       const relativeRegex = new RegExp(escapedRelative, 'i');
+      const relCandidates = getHindiPhoneticCandidates(relative.trim());
+      const relConditions = [
+        { relativeNameHi: relativeRegex },
+        { relativeNameEn: relativeRegex },
+        ...relCandidates.map((c) => ({ relativeNameHi: new RegExp(escapeRegex(c), 'i') }))
+      ];
       if (query.$or) {
-        query.$and = [{ $or: query.$or }, { $or: [{ relativeNameHi: relativeRegex }, { relativeNameEn: relativeRegex }] }];
+        query.$and = [{ $or: query.$or }, { $or: relConditions }];
         delete query.$or;
       } else {
-        query.$or = [{ relativeNameHi: relativeRegex }, { relativeNameEn: relativeRegex }];
+        query.$or = relConditions;
       }
     }
     
