@@ -339,7 +339,26 @@ GOV_LEXICON_RULES = [
     (re.compile(r'\bश्रीी+'), 'श्री'),
     (dev_word('श्रीीकिसन'), 'श्रीकिसन'),
     (dev_word('पंठेप सिंह'), 'प्रताप सिंह'),
-    (dev_word('पंेेप सिंह'), 'प्रताप सिंह')
+    (dev_word('पंेेप सिंह'), 'प्रताप सिंह'),
+
+    # 5. High-Frequency Rajasthan Font Glyph Glitches
+    (dev_word('सररता'), 'सरिता'),
+    (dev_word('दररया'), 'दरिया'),
+    (dev_word('हररशरण'), 'हरिशरण'),
+    (dev_word('हरर'), 'हरि'),
+    (dev_word('उरमला'), 'उर्मिला'),
+    (dev_word('उरममला'), 'उर्मिला'),
+    (dev_word('मालारमा'), 'मालाराम'),
+    (dev_word('मागीलाल'), 'मांगीलाल'),
+    (dev_word('संजप'), 'संजू'),
+    (dev_word('पपखा'), 'पुखा'),
+    (dev_word('पपूराम'), 'पप्पूराम'),
+    (dev_word('पपू राम'), 'पप्पू राम'),
+    (dev_word('पिन्डे ल'), 'पिन्डेल'),
+    (dev_word('पिन्डेल'), 'पिन्डेल'),
+    (dev_word('मुककेश'), 'मुकेश'),
+    (dev_word('ररकू'), 'रिंकू'),
+    (dev_word('ररंकू'), 'रिंकू')
 ]
 
 ENDRA_CONJUNCT_RULES = [
@@ -387,6 +406,9 @@ def normalize_electoral_hindi(text: str) -> str:
     s = re.sub(r'([ािीुूृेैोौं्])\1+', r'\1', s)
     s = re.sub(r'मांग्[ााुू]+राम', 'मांगूराम', s)
     s = re.sub(r'पं[ठेेप]+ सिंह', 'प्रताप सिंह', s)
+
+    # Universal ligature glitch: रर inside words (e.g. सररता -> सरिता, दररया -> दरिया)
+    s = re.sub(r'([क-ह])रर([क-हए-औ])', r'\1रि\2', s)
 
     # 1. Universal -ेन्द्र / -ेंद्र and conjunct half-matra fixes
     for regex, rep in ENDRA_CONJUNCT_RULES:
@@ -582,6 +604,102 @@ def parse_pdf_stream_tokens(stream_str):
             items.append((round(x, 1), round(y, 1), curr_font, b_list))
     return items
 
+def clean_house_val(val):
+    if not val:
+        return ""
+    val = str(val).strip()
+    val = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|सपखसर|गृह|house|no|ward|room|flat)[:ः\.\-\s]*', '', val, flags=re.I).strip()
+    val = re.sub(r'[,:ः\.\s]+$', '', val).strip()
+    val = re.sub(r'\s+', ' ', val)
+    val = re.sub(r'(\d)\s+([क-हए-औA-Za-z])(?!\w)', r'\1\2', val)
+    val = re.sub(r'\s*-\s*', '-', val)
+    if not val or val in ['-', '--', 'nil', 'na', 'none', 'n/a', 'null', 'undefined', 'लागू नहीं', 'उपलब्ध नहीं', 'शून्य']:
+        return ""
+    if re.fullmatch(r'0+', val):
+        return ""
+    m_lead = re.match(r'^0+([1-9]\d*(?:[A-Za-zक-हए-औ\/\-].*)?)$', val)
+    if m_lead:
+        val = m_lead.group(1)
+    return val
+
+SURNAMES_FOR_MATCH = {
+    'चौधरी', 'सिंह', 'कंवर', 'सियाग', 'सेवर', 'फंगाल', 'पिन्डे ल', 'पिन्डेल', 'बिश्नोई',
+    'जाट', 'मेघवाल', 'कुम्हार', 'शर्मा', 'वर्मा', 'सुथार', 'गोदारा', 'सारण', 'बेनीवाल',
+    'खत्री', 'देवी', 'बाई', 'कुमार', 'राम'
+}
+
+def get_base_devanagari_name(name):
+    if not name:
+        return ""
+    s = re.sub(r'^(?:श्री|श्रीमती|स्व\.|स्वर्गीय|डॉ\.|मा\.|पं\.)\s*', '', str(name).strip())
+    s = re.sub(r'\s+', ' ', s)
+    words = s.split()
+    if len(words) > 1 and words[-1] in SURNAMES_FOR_MATCH:
+        words = words[:-1]
+    return ''.join(words).replace('ं', 'न').replace('ँ', 'न')
+
+def resolve_and_normalize_family_house_numbers(voters_dict):
+    """
+    Intelligently resolves missing ('-') or zero ('0', '00') house numbers
+    by linking voters to their spouse, father, or sibling's verified house in the same roll.
+    Also strips leading zeroes (e.g. '02' -> '2') and normalizes empty records to '-'.
+    """
+    if not voters_dict:
+        return
+
+    # 1. Clean existing house numbers
+    for s_num, v in voters_dict.items():
+        raw_h = v.get('मकान संख्या') or v.get('house_no') or ''
+        cleaned_h = clean_house_val(raw_h)
+        v['मकान संख्या'] = cleaned_h
+        v['house_no'] = cleaned_h
+        v['house_no_hi'] = cleaned_h
+
+    # 2. Build verified reference pool of voters with genuine house numbers
+    valid_pool = [v for v in voters_dict.values() if v.get('house_no')]
+
+    # 3. Resolve for voters with empty house numbers
+    for s_num, v in voters_dict.items():
+        if v.get('house_no'):
+            continue
+
+        rel_type = v.get('संबंध प्रकार') or v.get('relation') or 'पिता'
+        rel_name = (v.get('संबंधी का नाम') or v.get('relative_name_hi') or '').strip()
+        base_rel = get_base_devanagari_name(rel_name)
+        if not base_rel:
+            continue
+
+        candidates = []
+        for cand in valid_pool:
+            c_base_name = get_base_devanagari_name(cand.get('मतदाता का नाम') or cand.get('name_hi'))
+            c_s_num = cand.get('क्रमांक') or cand.get('serial') or 0
+            dist = abs(c_s_num - s_num)
+
+            # Priority 1: Direct spouse or parent match
+            if base_rel == c_base_name or base_rel in c_base_name or c_base_name in base_rel:
+                candidates.append((dist, 1, cand['house_no']))
+
+            # Priority 2: Sibling match (sharing same parent name)
+            c_rel_name = get_base_devanagari_name(cand.get('संबंधी का नाम') or cand.get('relative_name_hi'))
+            if c_rel_name and (base_rel == c_rel_name or base_rel in c_rel_name or c_rel_name in base_rel):
+                candidates.append((dist, 2, cand['house_no']))
+
+        if candidates:
+            # Sort by priority (direct match priority 1 first), then closest distance in roll
+            candidates.sort(key=lambda x: (x[1], x[0]))
+            best_h = candidates[0][2]
+            v['मकान संख्या'] = best_h
+            v['house_no'] = best_h
+            v['house_no_hi'] = best_h
+
+    # 4. Final pass: Ensure any still unresolved house numbers are clean '-' (never '0' or '00')
+    for v in voters_dict.values():
+        h = v.get('house_no') or ''
+        final_h = h if h else '-'
+        v['मकान संख्या'] = final_h
+        v['house_no'] = final_h
+        v['house_no_hi'] = final_h
+
 def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_deleted=False):
     reader = pypdf.PdfReader(pdf_path)
     bn = os.path.basename(pdf_path)
@@ -745,7 +863,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_d
 
                     # House No line
                     elif sy - 48.5 <= y <= sy - 32.0:
-                        if cb_x + 48.0 <= x <= cb_x + 120.0:
+                        if cb_x + 35.0 <= x <= cb_x + 130.0:
                             if f == '/9':
                                 house_no_tokens.append((x, decode_hashes_to_hindi([ch_hash.get(c, '') for c in b])))
                             else:
@@ -830,6 +948,9 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_d
     if newly_learned_glyphs or newly_learned_words:
         save_learned_dictionary(newly_learned_glyphs, newly_learned_words)
         print(f"[Auto-Learner] Successfully surveyed & added {len(newly_learned_glyphs)} glyphs to dictionary from {bn}.")
+
+    # Multi-pass intelligent family house number resolution & leading-zero normalization
+    resolve_and_normalize_family_house_numbers(voters_dict)
 
     return [voters_dict[k] for k in sorted(voters_dict.keys())]
 
