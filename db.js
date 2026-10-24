@@ -67,8 +67,10 @@ module.exports = {
       }
 
       await mongoose.connect(uri, {
-        maxPoolSize: 20,
+        maxPoolSize: 50,
+        minPoolSize: 5,
         serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 45000,
       });
       console.log('✅ MongoDB Connected Successfully!');
 
