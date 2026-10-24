@@ -13,102 +13,11 @@ const boundedInteger = (value, fallback, maximum) => {
 
 const escapeRegex = (value) => (typeof value === 'string' ? value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '');
 
-const COMMON_SEARCH_MAPPINGS = {
-  'bu': ['बु', 'बू', 'ब'],
-  'bud': ['बुध', 'बुद', 'बूध'],
-  'budh': ['बुध', 'बूध'],
-  'budha': ['बुधा'],
-  'budhar': ['बुधार'],
-  'budharam': ['बुधाराम', 'बुधा राम'],
-  'ra': ['रा', 'र'],
-  'ram': ['राम'],
-  'ramesh': ['रमेश'],
-  'kam': ['कम', 'काम'],
-  'kamal': ['कमल'],
-  'kamlesh': ['कमलेश'],
-  'su': ['सु', 'सू'],
-  'sur': ['सुर', 'सूर'],
-  'suresh': ['सुरेश'],
-  'vi': ['वि', 'वी'],
-  'vik': ['विक', 'वीक'],
-  'vikas': ['विकास'],
-  'mu': ['मु', 'मू'],
-  'muk': ['मुक'],
-  'mukesh': ['मुकेश'],
-  'om': ['ओम'],
-  'omprakash': ['ओमप्रकाश', 'ओम प्रकाश'],
-  'si': ['सी', 'सि'],
-  'singh': ['सिंह'],
-  'sita': ['सीता'],
-  'geeta': ['गीता'],
-  'pooja': ['पूजा'],
-  'puja': ['पूजा'],
-  'kalu': ['कालू', 'कलु'],
-  'kaluram': ['कालूराम', 'कालू राम'],
-  'ashok': ['अशोक'],
-  'sunil': ['सुनील'],
-  'anil': ['अनिल'],
-  'manoj': ['मनोज'],
-  'sanjay': ['संजय'],
-  'santosh': ['संतोष'],
-  'vijay': ['विजय'],
-  'ajay': ['अजय'],
-  'devi': ['देवी'],
-  'bai': ['बाई'],
-  'kanwar': ['कंवर'],
-  'lal': ['लाल'],
-  'kumar': ['कुमार'],
-  'kumari': ['कुमारी'],
-  'chaudhary': ['चौधरी'],
-  'choudhary': ['चौधरी'],
-  'shyam': ['श्याम'],
-  'shanti': ['शान्ति', 'शांति'],
-  'sohan': ['सोहन'],
-  'mohan': ['मोहन'],
-  'bhanwar': ['भंवर'],
-  'tejaram': ['तेजाराम', 'तेजा राम'],
-  'jetharam': ['जेठाराम', 'जेठा राम']
-};
+const {
+  buildDevanagariSearchRegex,
+  getHindiPhoneticCandidates,
+} = require('../lib/phoneticSearch');
 
-const SOUND_MAP = {
-  'chh': 'छ', 'kh': 'ख', 'gh': 'घ', 'ch': 'च', 'jh': 'झ',
-  'th': 'थ', 'dh': 'ध', 'ph': 'फ', 'bh': 'भ', 'sh': 'श',
-  'tr': 'त्र', 'gy': 'ज्ञ', 'shr': 'श्र', 'ksh': 'क्ष',
-  'k': 'क', 'g': 'ग', 'j': 'ज', 't': 'त', 'd': 'द',
-  'n': 'न', 'p': 'प', 'f': 'फ', 'b': 'ब', 'm': 'म',
-  'y': 'य', 'r': 'र', 'l': 'ल', 'v': 'व', 'w': 'व',
-  's': 'स', 'h': 'ह', 'z': 'ज़', 'q': 'क', 'x': 'क्स', 'c': 'क'
-};
-const VOWEL_MAP = {
-  'oo': 'ू', 'ee': 'ी', 'ai': 'ै', 'au': 'ौ', 'ou': 'ौ',
-  'aa': 'ा', 'a': 'ा', 'i': 'ि', 'u': 'ु', 'e': 'े', 'o': 'ो'
-};
-
-const getHindiPhoneticCandidates = (query) => {
-  if (!query || typeof query !== 'string') return [];
-  const clean = query.trim().toLowerCase();
-  if (!clean || /[\u0900-\u097F]/.test(clean)) return []; // already Hindi or empty
-  if (/^[a-z]{2,4}\d{4,8}$/i.test(clean) || /^\d+$/.test(clean)) return []; // EPIC or numbers
-
-  if (COMMON_SEARCH_MAPPINGS[clean]) return COMMON_SEARCH_MAPPINGS[clean];
-
-  const tokens = [];
-  let i = 0;
-  while (i < clean.length) {
-    const s3 = clean.slice(i, i + 3);
-    if (SOUND_MAP[s3]) { tokens.push(SOUND_MAP[s3]); i += 3; continue; }
-    const s2 = clean.slice(i, i + 2);
-    if (SOUND_MAP[s2]) { tokens.push(SOUND_MAP[s2]); i += 2; continue; }
-    if (VOWEL_MAP[s2]) { tokens.push(VOWEL_MAP[s2]); i += 2; continue; }
-    const s1 = clean.charAt(i);
-    if (SOUND_MAP[s1]) { tokens.push(SOUND_MAP[s1]); i += 1; continue; }
-    if (VOWEL_MAP[s1]) { tokens.push(VOWEL_MAP[s1]); i += 1; continue; }
-    tokens.push(s1);
-    i++;
-  }
-  const assembled = tokens.join('');
-  return assembled ? [assembled] : [];
-};
 
 const buildWardFilterCondition = (ward) => {
   if (typeof ward !== 'string' || !ward.trim()) return null;
@@ -392,7 +301,7 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
       query.partNo = new RegExp(`^${escapeRegex(part.trim().replace(/^(भाग|Part)\s*/i, ''))}$`, 'i');
     }
     if (typeof search === 'string' && search.trim()) {
-      const q = search.trim();
+      const q = search.trim().slice(0, 100);
       const searchRegex = new RegExp(escapeRegex(q), 'i');
       query.$or = [
         { houseNo: searchRegex },
@@ -400,6 +309,10 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
         { nameEn: searchRegex },
         { epic: searchRegex }
       ];
+      const devRegex = buildDevanagariSearchRegex(q);
+      if (devRegex) {
+        query.$or.push({ nameHi: devRegex });
+      }
       const phoneticCandidates = getHindiPhoneticCandidates(q);
       for (const cand of phoneticCandidates) {
         query.$or.push({ nameHi: new RegExp(escapeRegex(cand), 'i') });
@@ -498,8 +411,23 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     const { search, relative, ward, part, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
     const query = addVoterAccess(req);
 
+    const isSearching = Boolean((search && search.trim()) || (relative && relative.trim()));
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const isAll = req.query.all === 'true' || req.query.all === '1';
+    const page = boundedInteger(req.query.page, 1, 100000);
+    const pageSize = boundedInteger(req.query.pageSize, 100, 10000);
+
+    // High-speed O(1) Cache for repeated searches and rapid typing
+    const cacheKey = isSearching
+      ? `voter_search_${orgId}_${encodeURIComponent((search || '').trim().toLowerCase())}_${encodeURIComponent((relative || '').trim().toLowerCase())}_w${ward || ''}_p${part || ''}_pg${page}_sz${pageSize}`
+      : null;
+    if (cacheKey) {
+      const cached = cache.get(cacheKey);
+      if (cached) return res.json(cached);
+    }
+
     if (typeof search === 'string' && search.trim()) {
-      const trimmed = search.trim().slice(0, 100);
+      const trimmed = search.trim().slice(0, 100).replace(/\s+/g, ' ');
       const escaped = escapeRegex(trimmed);
       const searchRegex = new RegExp(escaped, 'i');
       query.$or = [
@@ -512,6 +440,14 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
         { mobileNo: searchRegex }
       ];
 
+      // 1. Advanced Devanagari regex for Hindi voter records (handles -न्द्र, schwa, compound suffixes)
+      const devRegex = buildDevanagariSearchRegex(trimmed);
+      if (devRegex) {
+        query.$or.push({ nameHi: devRegex });
+        query.$or.push({ relativeNameHi: devRegex });
+      }
+
+      // 2. Direct phonetic sound candidates
       const phoneticCandidates = getHindiPhoneticCandidates(trimmed);
       for (const cand of phoneticCandidates) {
         const candRegex = new RegExp(escapeRegex(cand), 'i');
@@ -526,12 +462,15 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     }
     
     if (typeof relative === 'string' && relative.trim()) {
-      const escapedRelative = escapeRegex(relative.trim().slice(0, 100));
+      const trimmedRelative = relative.trim().slice(0, 100).replace(/\s+/g, ' ');
+      const escapedRelative = escapeRegex(trimmedRelative);
       const relativeRegex = new RegExp(escapedRelative, 'i');
-      const relCandidates = getHindiPhoneticCandidates(relative.trim());
+      const relDevRegex = buildDevanagariSearchRegex(trimmedRelative);
+      const relCandidates = getHindiPhoneticCandidates(trimmedRelative);
       const relConditions = [
         { relativeNameHi: relativeRegex },
         { relativeNameEn: relativeRegex },
+        ...(relDevRegex ? [{ relativeNameHi: relDevRegex }] : []),
         ...relCandidates.map((c) => ({ relativeNameHi: new RegExp(escapeRegex(c), 'i') }))
       ];
       if (query.$or) {
@@ -555,10 +494,6 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(escapeRegex(caste.trim()), 'i');
     if (typeof assignedWorker === 'string' && assignedWorker.trim()) query.assignedWorker = new RegExp(escapeRegex(assignedWorker.trim()), 'i');
 
-    const isAll = req.query.all === 'true' || req.query.all === '1';
-    const page = boundedInteger(req.query.page, 1, 100000);
-    const pageSize = boundedInteger(req.query.pageSize, 100, 10000);
-    
     // Execute count and paginated query in parallel for 2x faster responses
     const voterQuery = Voter.find(query)
       .sort({ wardNo: 1, partNo: 1, serialNo: 1 })
@@ -581,9 +516,15 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
       mobileNo: v.mobileNo || v.phone || '',
     }));
       
-    res.json(req.query.page || req.query.pageSize || isAll
+    const payload = req.query.page || req.query.pageSize || isAll
       ? { data: formattedVoters, page: isAll ? 1 : page, pageSize: isAll ? count : pageSize, total: count }
-      : formattedVoters);
+      : formattedVoters;
+
+    if (cacheKey) {
+      cache.set(cacheKey, payload, 60);
+    }
+
+    res.json(payload);
   } catch (err) {
     console.error('Voter search failed:', err.message);
     res.status(500).json({ message: 'Voter records could not be loaded.' });
@@ -747,6 +688,8 @@ router.put('/:id', verifyToken, (req, res, next) => {
     // Invalidate Cache for this organization
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`voter_search_${orgKey}_`);
+    cache.delPrefix(`households_${orgKey}_`);
     cache.delPrefix(`wards_summary_${orgKey}_`);
     cache.delPrefix(`turnout_summary_${orgKey}_`);
 
@@ -781,6 +724,7 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     // Invalidate Cache for this organization
     const orgKey = query.organizationId || req.user.organizationId || 'org_default';
     cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`voter_search_${orgKey}_`);
     cache.delPrefix(`turnout_summary_${orgKey}_`);
     
     res.json({ success: true, message: 'Vote status updated.' });

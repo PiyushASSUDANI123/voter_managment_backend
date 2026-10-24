@@ -4,6 +4,7 @@ const { addVoterAccess, getEffectiveOrgId } = require('../lib/access');
 const { createWorkbook, addSheet, sendWorkbook } = require('../lib/xlsx');
 const { Voter, Organization, SlipDispatch } = require('../models/index');
 const cache = require('../lib/cache');
+const { buildDevanagariSearchRegex, getHindiPhoneticCandidates } = require('../lib/phoneticSearch');
 
 const router = express.Router();
 
@@ -169,12 +170,19 @@ router.get('/migrants', requireModule('migrants'), async (req, res) => {
       query.wardNo = new RegExp(req.query.ward.trim(), 'i');
     }
     if (typeof req.query.search === 'string' && req.query.search.trim()) {
-      const searchRegex = new RegExp(req.query.search.trim(), 'i');
+      const q = req.query.search.trim().slice(0, 100);
+      const searchRegex = new RegExp(q, 'i');
       query.$or = [
         { nameHi: searchRegex },
         { nameEn: searchRegex },
         { epic: searchRegex },
       ];
+      const devRegex = buildDevanagariSearchRegex(q);
+      if (devRegex) query.$or.push({ nameHi: devRegex });
+      const candidates = getHindiPhoneticCandidates(q);
+      for (const cand of candidates) {
+        query.$or.push({ nameHi: new RegExp(cand, 'i') });
+      }
     }
 
     const count = await Voter.countDocuments(query);
