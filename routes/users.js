@@ -29,16 +29,28 @@ const selectAccounts = async (req, workersOnly) => {
   const users = await User.find(query).sort({ createdAt: -1 }).lean();
   
   const orgIds = [...new Set(users.map(u => u.organizationId))];
-  const orgs = await Organization.find({ _id: { $in: orgIds } }).lean();
+  const [orgs, workerCounts] = await Promise.all([
+    Organization.find({ _id: { $in: orgIds } }).lean(),
+    orgIds.length > 0
+      ? Voter.aggregate([
+          { $match: { organizationId: { $in: orgIds }, assignedWorker: { $ne: null } } },
+          { $group: { _id: { org: '$organizationId', worker: '$assignedWorker' }, count: { $sum: 1 } } }
+        ])
+      : Promise.resolve([])
+  ]);
   const orgMap = orgs.reduce((acc, o) => ({ ...acc, [o._id]: o.name }), {});
+  const countMap = new Map();
+  workerCounts.forEach((wc) => {
+    if (wc._id?.worker) {
+      countMap.set(`${wc._id.org}_${wc._id.worker}`, wc.count);
+    }
+  });
 
-  // Fetch assigned voters count
-  const results = await Promise.all(users.map(async (u) => {
-    const assignedVoters = await Voter.countDocuments({
-      organizationId: u.organizationId,
-      assignedWorker: { $in: [u.fullName, u.email] }
-    });
-    
+  const results = users.map((u) => {
+    const countByName = countMap.get(`${u.organizationId}_${u.fullName}`) || 0;
+    const countByEmail = countMap.get(`${u.organizationId}_${u.email}`) || 0;
+    const assignedVoters = countByName + countByEmail;
+
     return {
       id: u._id,
       email: u.email,
@@ -55,7 +67,7 @@ const selectAccounts = async (req, workersOnly) => {
       organizationName: orgMap[u.organizationId] || u.organizationId,
       createdAt: u.createdAt,
     };
-  }));
+  });
   
   return results;
 };

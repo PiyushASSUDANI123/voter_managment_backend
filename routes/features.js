@@ -46,6 +46,10 @@ router.use(verifyToken);
 router.get('/war-room', requireModule('warroom'), async (req, res) => {
   try {
     const match = addVoterAccess(req);
+    const orgId = match.organizationId || req.user?.organizationId || 'org_default';
+    const cacheKey = `war_room_${orgId}_${req.user?.id || 'u'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
 
     const [supportResult, boothsResult] = await Promise.all([
       Voter.aggregate([
@@ -96,7 +100,9 @@ router.get('/war-room', requireModule('warroom'), async (req, res) => {
      part: booth.partNo || '',
     }));
 
-    res.json({ metrics, support, booths });
+    const result = { metrics, support, booths };
+    cache.set(cacheKey, result, 30);
+    res.json(result);
   } catch (err) {
     console.error('War room analytics failed:', err.message);
     res.status(500).json({ message: 'War room data could not be loaded.' });
@@ -448,10 +454,10 @@ router.get('/export.xlsx', async (req, res) => {
     };
     const requiredModules = datasetModules[dataset];
     if (!requiredModules) return res.status(400).json({ message: 'Invalid dataset requested.' });
-    if (['voters', 'turnout', 'migrants', 'community'].includes(dataset) && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'पूरा डेटा एक साथ डाउनलोड करने की अनुमति केवल सुपर एडमिन को है।' });
+    if (['voters', 'turnout', 'migrants', 'community'].includes(dataset) && req.user.role !== 'admin' && req.user.role !== 'tenant_admin') {
+      return res.status(403).json({ message: 'पूरा डेटा एक साथ डाउनलोड करने की अनुमति केवल एडमिन को है।' });
     }
-    if (req.user.role !== 'admin' && !requiredModules.some((module) => req.user.modules?.includes(module))) {
+    if (req.user.role !== 'admin' && req.user.role !== 'tenant_admin' && !requiredModules.some((module) => req.user.modules?.includes(module))) {
       return res.status(403).json({ message: 'Your account does not have access to this export.' });
     }
 

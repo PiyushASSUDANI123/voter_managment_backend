@@ -123,7 +123,7 @@ async function uploadMediaToMeta({ token, phoneNumberId, buffer, mimeType, filen
  */
 function normalizePhoneNumber(input) {
   if (!input) return "";
-  let digits = input.replace(/[^\d]/g, '');
+  let digits = String(input).replace(/[^\d]/g, '');
   if (digits.startsWith('0')) {
     digits = digits.substring(1);
   }
@@ -338,7 +338,8 @@ router.post('/send-slip', verifyToken, requireModule('voters'), async (req, res)
       });
     }
 
-    if (!voterId || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
+    const rawPhone = String(phoneNumber || '').trim();
+    if (!voterId || !/^\+?[\d\s().-]{7,20}$/.test(rawPhone)) {
       return res.status(400).json({ message: 'वैध मतदाता ID और मोबाइल नंबर आवश्यक है।' });
     }
 
@@ -637,7 +638,8 @@ router.post('/send-manual', verifyToken, requireModule('voters'), async (req, re
   const orgId = req.user.organizationId || 'org_default';
   try {
     const { voterId, phoneNumber, slipImageDataUrl } = req.body;
-    if (!voterId || typeof phoneNumber !== 'string' || !/^\+?[\d\s()-]{7,20}$/.test(phoneNumber)) {
+    const rawPhone = String(phoneNumber || '').trim();
+    if (!voterId || !/^\+?[\d\s().-]{7,20}$/.test(rawPhone)) {
       return res.status(400).json({ message: 'वैध मतदाता ID और मोबाइल नंबर आवश्यक है।' });
     }
 

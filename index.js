@@ -38,34 +38,37 @@ const PORT = process.env.PORT || 5002;
 // High-Throughput Rate Limiters
 const rateLimit = require('express-rate-limit');
 
-// 1. General API Rate Limiter (600 req/min - high headroom for ground workers sharing same hotspot)
+// 1. General API Rate Limiter (1200 req/min - generous headroom for multiple ground workers sharing mobile hotspot)
 const apiLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 600,
+  max: 1200,
   message: { message: 'Too many requests from this IP, please try again after a minute' },
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: false },
+  skip: (req) => req.method === 'OPTIONS' || req.path === '/health' || req.path === '/api/health',
 });
 
 // 2. Strict Authentication Rate Limiter (Prevents brute force on login)
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes window
-  max: 40, // 40 attempts per 15 min per IP
+  max: 60, // 60 attempts per 15 min per IP
   message: { message: 'बहुत अधिक लॉगिन प्रयास (Too many login attempts). कृपया 15 मिनट बाद पुनः प्रयास करें।' },
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: false },
+  skip: (req) => req.method === 'OPTIONS',
 });
 
 // 3. Upload Rate Limiter (Prevents server exhaustion from spam uploads)
 const uploadLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
-  max: 15,
+  max: 30,
   message: { error: 'फाइल अपलोड की सीमा पार हो गई है। कृपया 1 मिनट बाद पुनः प्रयास करें।' },
   standardHeaders: true,
   legacyHeaders: false,
   validate: { trustProxy: false },
+  skip: (req) => req.method === 'OPTIONS',
 });
 
 const path = require('path');
@@ -76,13 +79,15 @@ app.use(helmet({
   crossOriginOpenerPolicy: false,
 }));
 
-// CORS Configuration: Open and permissive so clients (Vercel, Android WebView, Localhost) NEVER get blocked
-app.use(cors({
+// CORS Configuration: Open, ultra-permissive and cached (Vercel, Android WebView, Capacitor, Localhost never get blocked)
+const corsMiddleware = cors({
   origin: true,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-requested-with', 'Accept']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-organization-id', 'x-client-id', 'x-requested-with', 'Accept'],
+  maxAge: 86400, // Cache preflight requests for 24h to eliminate duplicate OPTIONS calls
+});
+app.use(corsMiddleware);
 
 // High-speed payload compression (shrinks JSON payloads by up to 90% when module is available)
 if (compression) {

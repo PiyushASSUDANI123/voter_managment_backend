@@ -38,8 +38,8 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
   try {
-    const { email, password, username } = req.body;
-    const loginIdentifier = (email || username || '').trim();
+    const { email, password, username } = req.body || {};
+    const loginIdentifier = String(email || username || '').trim();
     if (!loginIdentifier || typeof password !== 'string') {
       return res.status(400).json({ message: 'Email/Username and password are required.' });
     }

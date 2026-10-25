@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test:e2e": "node test/e2e-smoke.js"
+    "test:e2e": "node test/e2e-smoke.js",
+    "test:chaos": "node test/chaos-stress-test.js"
   },
   "keywords": [],
   "author": "",

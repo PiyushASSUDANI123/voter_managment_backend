@@ -109,7 +109,12 @@ voterSchema.index({ organizationId: 1, partNo: 1, houseNo: 1 });
 voterSchema.index({ organizationId: 1, familyId: 1 });
 voterSchema.index({ organizationId: 1, epic: 1 });
 voterSchema.index({ organizationId: 1, nameHi: 1 });
+voterSchema.index({ organizationId: 1, nameEn: 1 });
+voterSchema.index({ organizationId: 1, relativeNameHi: 1 });
+voterSchema.index({ organizationId: 1, relativeNameEn: 1 });
 voterSchema.index({ organizationId: 1, mobileNo: 1 });
+voterSchema.index({ organizationId: 1, gender: 1 });
+voterSchema.index({ organizationId: 1, status: 1 });
 voterSchema.index({ organizationId: 1, caste: 1 });
 voterSchema.index({ organizationId: 1, caste: 1, wardNo: 1 });
 voterSchema.index({ organizationId: 1, voted: 1 });
@@ -128,6 +133,8 @@ organizationSchema.index({ createdAt: -1 });
 userSchema.index({ organizationId: 1, role: 1 });
 userSchema.index({ organizationId: 1, isActive: 1 });
 userSchema.index({ organizationId: 1, role: 1, isActive: 1 });
+userSchema.index({ organizationId: 1, email: 1 });
+userSchema.index({ phone: 1 });
 
 // 🚀 Performance Optimization: Text Search Index
 // Enables fast text searching across multiple name fields (English & Hindi)

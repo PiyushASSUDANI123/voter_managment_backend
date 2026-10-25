@@ -719,6 +719,7 @@ router.put('/:id', verifyToken, (req, res, next) => {
     cache.delPrefix(`households_${orgKey}_`);
     cache.delPrefix(`wards_summary_${orgKey}_`);
     cache.delPrefix(`turnout_summary_${orgKey}_`);
+    cache.delPrefix(`war_room_${orgKey}_`);
 
     res.json(voter);
   } catch (err) {
@@ -753,6 +754,7 @@ router.put('/:id/vote', verifyToken, requireModule('poll-desk', 'turnout'), asyn
     cache.delPrefix(`voters_all_${orgKey}_`);
     cache.delPrefix(`voter_search_${orgKey}_`);
     cache.delPrefix(`turnout_summary_${orgKey}_`);
+    cache.delPrefix(`war_room_${orgKey}_`);
     
     res.json({ success: true, message: 'Vote status updated.' });
   } catch (err) {
@@ -868,6 +870,10 @@ const handleBulkUpdate = async (req, res) => {
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ message: 'कम से कम एक मतदाता चुनना आवश्यक है।' });
     }
+    const cleanIds = ids.slice(0, 5000).filter((id) => (typeof id === 'string' && id.trim()) || typeof id === 'number');
+    if (cleanIds.length === 0) {
+      return res.status(400).json({ message: 'कम से कम एक मान्य मतदाता ID प्रदान करें।' });
+    }
     if (!updates || typeof updates !== 'object') {
       return res.status(400).json({ message: 'अद्यतन विवरण (updates) अनिवार्य है।' });
     }
@@ -903,7 +909,7 @@ const handleBulkUpdate = async (req, res) => {
     }
 
     const query = addVoterAccess(req);
-    query._id = { $in: ids };
+    query._id = { $in: cleanIds };
 
     const result = await Voter.updateMany(query, { $set: safeSet });
 
@@ -915,6 +921,7 @@ const handleBulkUpdate = async (req, res) => {
     cache.delPrefix(`wards_summary_${orgKey}_`);
     cache.delPrefix(`turnout_summary_${orgKey}_`);
     cache.delPrefix(`org_castes_${orgKey}`);
+    cache.delPrefix(`war_room_${orgKey}_`);
 
     res.json({
       success: true,

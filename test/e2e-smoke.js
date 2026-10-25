@@ -405,7 +405,11 @@ const main = async () => {
     assert.equal(updatedVoter.nameEn, 'Updated fixture voter');
 
     console.log('Authenticated E2E API smoke checks passed for all nine modules and admin Excel flows.');
-    if (serveUi) await startUi();
+    if (serveUi) {
+      await startUi();
+    } else {
+      process.exit(0);
+    }
   } finally {
     await cleanup();
   }
@@ -416,5 +420,5 @@ main().catch((err) => {
   console.error('Authenticated E2E API smoke checks failed:', err.message);
   cleanup()
     .catch((cleanupError) => console.error('E2E fixture cleanup failed:', cleanupError.message))
-    .finally(() => { process.exitCode = 1; });
+    .finally(() => { process.exit(1); });
 });

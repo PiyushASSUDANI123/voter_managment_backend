@@ -66,16 +66,38 @@ function stripNameFromRelative(voterName, relName) {
 router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
   try {
     const orgs = await Organization.find({ _id: { $ne: 'org_default' } }).sort({ createdAt: -1 }).lean();
-    
-    const result = await Promise.all(orgs.map(async (o) => {
-      const adminCount = await User.countDocuments({ organizationId: o._id, role: 'tenant_admin' });
-      const activeWorkers = await User.countDocuments({ organizationId: o._id, role: 'worker', isActive: true });
-      const voterCount = await Voter.countDocuments({ organizationId: o._id });
+    const orgIds = orgs.map(o => o._id);
+
+    const [adminCounts, workerCounts, voterCounts, tenantAdmins] = await Promise.all([
+      User.aggregate([
+        { $match: { organizationId: { $in: orgIds }, role: 'tenant_admin' } },
+        { $group: { _id: '$organizationId', count: { $sum: 1 } } }
+      ]),
+      User.aggregate([
+        { $match: { organizationId: { $in: orgIds }, role: 'worker', isActive: true } },
+        { $group: { _id: '$organizationId', count: { $sum: 1 } } }
+      ]),
+      Voter.aggregate([
+        { $match: { organizationId: { $in: orgIds } } },
+        { $group: { _id: '$organizationId', count: { $sum: 1 } } }
+      ]),
+      User.find({ organizationId: { $in: orgIds }, role: 'tenant_admin' }).lean()
+    ]);
+
+    const adminMap = new Map(adminCounts.map(a => [a._id, a.count]));
+    const workerMap = new Map(workerCounts.map(w => [w._id, w.count]));
+    const voterMap = new Map(voterCounts.map(v => [v._id, v.count]));
+    const tenantAdminMap = new Map(tenantAdmins.map(u => [u.organizationId, u]));
+
+    const result = orgs.map((o) => {
+      const adminCount = adminMap.get(o._id) || 0;
+      const activeWorkers = workerMap.get(o._id) || 0;
+      const voterCount = voterMap.get(o._id) || 0;
 
       let adminEmail = o.adminEmail || '';
       let initialPassword = o.initialPassword || o.demoPassword || '';
       if (!adminEmail || !initialPassword) {
-        const adminUser = await User.findOne({ organizationId: o._id, role: 'tenant_admin' }).lean();
+        const adminUser = tenantAdminMap.get(o._id);
         if (adminUser) {
           adminEmail = adminEmail || adminUser.email || '';
           initialPassword = initialPassword || adminUser.initialPassword || adminUser.demoPassword || '';
@@ -97,7 +119,7 @@ router.get('/organizations', verifyToken, isAdmin, async (_req, res) => {
         ulbWardGramPanchayat: o.ulbWardGramPanchayat || '',
         customCastes: o.customCastes || o.settings?.customCastes || [],
       };
-    }));
+    });
     
     res.json(result);
   } catch (err) {
