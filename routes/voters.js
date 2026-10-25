@@ -4,7 +4,7 @@ const cache = require('../lib/cache');
 const { formatVoter } = require('./features');
 const { verifyToken, requireModule } = require('../middleware/authMiddleware');
 const { addVoterAccess } = require('../lib/access');
-const { Voter } = require('../models/index');
+const { Voter, Organization } = require('../models/index');
 
 const boundedInteger = (value, fallback, maximum) => {
   const parsed = Number.parseInt(value, 10);
@@ -265,9 +265,24 @@ router.get('/wards-summary', verifyToken, requireModule('voters', 'community', '
     const cacheKey = `wards_summary_${orgId}_${req.user.id}`;
     const cached = cache.get(cacheKey);
     if (cached) return res.json(cached);
-    const rawWards = await Voter.aggregate([
-      { $match: query },
-      { $group: { _id: '$wardNo', count: { $sum: 1 } } }
+    const [rawWards, total, rawFamilies] = await Promise.all([
+      Voter.aggregate([
+        { $match: query },
+        { $group: { _id: '$wardNo', count: { $sum: 1 } } }
+      ]),
+      Voter.countDocuments(query),
+      Voter.aggregate([
+        { $match: query },
+        {
+          $group: {
+            _id: {
+              houseNo: { $ifNull: ['$houseNo', '—'] },
+              wardNo: { $ifNull: ['$wardNo', ''] }
+            }
+          }
+        },
+        { $count: 'totalFamilies' }
+      ])
     ]);
     const wards = rawWards
       .filter((w) => w._id !== null && w._id !== undefined && String(w._id).trim() !== '')
@@ -277,8 +292,8 @@ router.get('/wards-summary', verifyToken, requireModule('voters', 'community', '
         if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
         return String(a._id).localeCompare(String(b._id));
       });
-    const total = await Voter.countDocuments(query);
-    const result = { wards, total };
+    const totalFamilies = rawFamilies[0]?.totalFamilies || 0;
+    const result = { wards, total, totalFamilies };
     cache.set(cacheKey, result, 300);
     res.json(result);
   } catch (err) {
@@ -408,7 +423,7 @@ router.get('/households', verifyToken, requireModule('voters', 'community'), asy
 // Get all voters (with search & pagination)
 router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'migrants'), async (req, res) => {
   try {
-    const { search, relative, ward, part, house, isMigrant, supportStatus, caste, assignedWorker } = req.query;
+    const { search, relative, ward, part, house, isMigrant, supportStatus, caste, assignedWorker, gender } = req.query;
     const query = addVoterAccess(req);
 
     const isSearching = Boolean((search && search.trim()) || (relative && relative.trim()));
@@ -419,7 +434,7 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
 
     // High-speed O(1) Cache for repeated searches and rapid typing
     const cacheKey = isSearching
-      ? `voter_search_${orgId}_${encodeURIComponent((search || '').trim().toLowerCase())}_${encodeURIComponent((relative || '').trim().toLowerCase())}_w${ward || ''}_p${part || ''}_pg${page}_sz${pageSize}`
+      ? `voter_search_${orgId}_${encodeURIComponent((search || '').trim().toLowerCase())}_${encodeURIComponent((relative || '').trim().toLowerCase())}_w${ward || ''}_p${part || ''}_c${encodeURIComponent((caste || '').trim().toLowerCase())}_g${encodeURIComponent((gender || '').trim().toLowerCase())}_pg${page}_sz${pageSize}`
       : null;
     if (cacheKey) {
       const cached = cache.get(cacheKey);
@@ -491,7 +506,19 @@ router.get('/', verifyToken, requireModule('voters', 'community', 'workers', 'mi
     if (typeof supportStatus === 'string' && ['core', 'swing', 'opposition', 'unmarked'].includes(supportStatus)) {
       query.supportStatus = supportStatus;
     }
-    if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(escapeRegex(caste.trim()), 'i');
+    if (typeof caste === 'string' && caste.trim()) query.caste = new RegExp(`^${escapeRegex(caste.trim())}$`, 'i');
+    if (typeof gender === 'string' && gender.trim()) {
+      const g = gender.trim();
+      if (['पुरुष', 'male', 'm'].includes(g.toLowerCase()) || g === 'पुरुष') {
+        query.gender = { $in: ['पुरुष', 'Male', 'M', 'male'] };
+      } else if (['महिला', 'स्त्री', 'female', 'f'].includes(g.toLowerCase()) || g === 'महिला' || g === 'स्त्री') {
+        query.gender = { $in: ['स्त्री', 'महिला', 'Female', 'F', 'female'] };
+      } else if (['अन्य', 'other', 'tg'].includes(g.toLowerCase()) || g === 'अन्य') {
+        query.gender = { $in: ['अन्य', 'Other', 'TG', 'other'] };
+      } else {
+        query.gender = new RegExp(`^${escapeRegex(g)}$`, 'i');
+      }
+    }
     if (typeof assignedWorker === 'string' && assignedWorker.trim()) query.assignedWorker = new RegExp(escapeRegex(assignedWorker.trim()), 'i');
 
     // Execute count and paginated query in parallel for 2x faster responses
@@ -799,6 +826,109 @@ router.post('/bulk-delete', verifyToken, async (req, res) => {
     res.status(500).json({ message: 'डेटा डिलीट करने में त्रुटि आई।' });
   }
 });
+
+// Get dynamic Castes list from database (Admin configured customCastes + existing voter castes)
+router.get('/castes', verifyToken, async (req, res) => {
+  try {
+    const query = addVoterAccess(req);
+    const orgId = query.organizationId || req.user.organizationId || 'org_default';
+    const cacheKey = `org_castes_${orgId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    const org = await Organization.findById(orgId).lean();
+    const customCastes = Array.isArray(org?.customCastes) && org.customCastes.length > 0
+      ? org.customCastes
+      : Array.isArray(org?.settings?.customCastes) && org.settings.customCastes.length > 0
+      ? org.settings.customCastes
+      : [];
+
+    const dbCastes = await Voter.distinct('caste', { organizationId: orgId });
+    const cleanedDbCastes = (Array.isArray(dbCastes) ? dbCastes : [])
+      .map((c) => (typeof c === 'string' ? c.trim() : ''))
+      .filter(Boolean);
+
+    // Combine while preserving customCastes first, followed by others
+    const casteSet = new Set([...customCastes, ...cleanedDbCastes]);
+    const castes = Array.from(casteSet);
+
+    const result = { success: true, castes, customCastes };
+    cache.set(cacheKey, result, 180);
+    res.json(result);
+  } catch (err) {
+    console.error('Failed to get castes:', err.message);
+    res.status(500).json({ message: 'Castes could not be loaded.' });
+  }
+});
+
+// Bulk Tag & Bulk Caste Update for multiple selected voters
+const handleBulkUpdate = async (req, res) => {
+  try {
+    const { ids, updates } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ message: 'कम से कम एक मतदाता चुनना आवश्यक है।' });
+    }
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ message: 'अद्यतन विवरण (updates) अनिवार्य है।' });
+    }
+
+    const safeSet = {};
+    const allowedFields = [
+      'caste',
+      'surety',
+      'supportStatus',
+      'assignedWorker',
+      'notes',
+      'isMigrant',
+      'migrantLocation'
+    ];
+
+    for (const field of allowedFields) {
+      if (Object.hasOwn(updates, field)) {
+        const val = updates[field];
+        if (field === 'isMigrant') {
+          safeSet.isMigrant = Boolean(val);
+        } else if (field === 'supportStatus') {
+          if (['core', 'swing', 'opposition', 'unmarked', ''].includes(val)) {
+            safeSet.supportStatus = val || 'unmarked';
+          }
+        } else if (typeof val === 'string') {
+          safeSet[field] = val.trim();
+        }
+      }
+    }
+
+    if (Object.keys(safeSet).length === 0) {
+      return res.status(400).json({ message: 'कोई मान्य फ़ील्ड प्रदान नहीं की गई।' });
+    }
+
+    const query = addVoterAccess(req);
+    query._id = { $in: ids };
+
+    const result = await Voter.updateMany(query, { $set: safeSet });
+
+    // Invalidate Cache for this organization
+    const orgKey = query.organizationId || req.user.organizationId || 'org_default';
+    cache.delPrefix(`voters_all_${orgKey}_`);
+    cache.delPrefix(`voter_search_${orgKey}_`);
+    cache.delPrefix(`households_${orgKey}_`);
+    cache.delPrefix(`wards_summary_${orgKey}_`);
+    cache.delPrefix(`turnout_summary_${orgKey}_`);
+    cache.delPrefix(`org_castes_${orgKey}`);
+
+    res.json({
+      success: true,
+      message: `${result.modifiedCount} मतदाताओं का विवरण सफलतापूर्वक अपडेट किया गया।`,
+      modifiedCount: result.modifiedCount
+    });
+  } catch (err) {
+    console.error('Bulk voter update failed:', err.message);
+    res.status(500).json({ message: 'बल्क अपडेट करने में त्रुटि आई।' });
+  }
+};
+
+router.post('/bulk-update', verifyToken, requireModule('voters', 'community'), handleBulkUpdate);
+router.put('/bulk-update', verifyToken, requireModule('voters', 'community'), handleBulkUpdate);
 
 // EXPLICIT CLIENT PROTECTION: Catch-all for clients trying to delete or post
 router.use((req, res, next) => {
