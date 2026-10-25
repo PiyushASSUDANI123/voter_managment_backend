@@ -939,7 +939,7 @@ DEV_VOWELS = {
 }
 
 DEV_MATRAS = {
-    'ा': 'a', 'ि': 'i', 'ी': 'ee', 'ु': 'u', 'ू': 'oo',
+    'ा': 'a', 'ि': 'i', 'ी': 'i', 'ु': 'u', 'ू': 'u',
     'ृ': 'ri', 'े': 'e', 'ै': 'ai', 'ो': 'o', 'ौ': 'au',
     'ं': 'n', 'ँ': 'n', 'ः': 'h', 'ॅ': 'e', 'ॉ': 'o'
 }
@@ -961,8 +961,14 @@ COMPOUND_NAME_SUFFIXES = [
     ('राम', ' Ram'), ('लाल', ' Lal'), ('कुमार', ' Kumar'), ('कुमारी', ' Kumari'),
     ('सिंह', ' Singh'), ('कंवर', ' Kanwar'), ('देवी', ' Devi'), ('बाई', ' Bai'),
     ('प्रसाद', ' Prasad'), ('प्रकाश', ' Prakash'), ('चंद', ' Chand'), ('चन्द', ' Chand'),
-    ('नाथ', ' Nath'), ('दास', ' Das'), ('शंकर', ' Shanker'), ('चन्द्र', ' Chandra')
+    ('चन्द्र', ' Chandra'), ('नारायण', ' Narayan'), ('नाथ', ' Nath'), ('दास', ' Das'),
+    ('शंकर', ' Shankar'), ('दीन', ' Deen'), ('भान', ' Bhan'), ('जीत', ' Jeet'),
+    ('पाल', ' Pal'), ('देव', ' Dev'), ('राज', ' Raj'), ('धर', ' Dhar'),
+    ('वल्लभ', ' Vallabh'), ('दत्त', ' Dutt'), ('वती', ' Vati'), ('मती', ' Mati'),
+    ('प्रिया', ' Priya'), ('रानी', ' Rani')
 ]
+
+CONJUNCT_RETENTION_ENDINGS = ('न्द्र', 'त्र', 'प्र', 'क्र', 'ग्र', 'श्र', 'क्ल', 'ज्ञ', 'त्य', 'र्य', 'व्य', 'ष्ठ', 'स्थ', 'द्ध')
 
 def transliterate_token(token: str) -> str:
     if not token:
@@ -974,6 +980,8 @@ def transliterate_token(token: str) -> str:
     n = len(chars)
     res = []
     i = 0
+    retains_final_a = any(token.endswith(conj) for conj in CONJUNCT_RETENTION_ENDINGS)
+
     while i < n:
         c = chars[i]
         if i + 1 < n and chars[i+1] == '़':
@@ -984,21 +992,50 @@ def transliterate_token(token: str) -> str:
             res.append(DEV_VOWELS[c].lower() if res else DEV_VOWELS[c])
         elif c in DEV_CONSONANTS:
             base = DEV_CONSONANTS[c]
-            if i + 1 < n and chars[i+1] == '्':
+            next_c = chars[i+1] if i + 1 < n else None
+            next_next = chars[i+2] if i + 2 < n else None
+            is_conjunct_member = (i >= 2 and chars[i-1] == '्')
+
+            if c == 'व':
+                if i > 0 and chars[i-1] in ('ं', 'न', 'स', 'र', 'ल', 'ई', 'त'):
+                    base = 'w'
+
+            if next_c == '्':
                 res.append(base)
                 i += 1
-            elif i + 1 < n and chars[i+1] in DEV_MATRAS:
+            elif next_c in DEV_MATRAS:
                 res.append(base)
-                matra = chars[i+1]
+                matra = next_c
                 if matra in ('ं', 'ँ'):
-                    res.append('an')
+                    if next_next and next_next in ('प', 'फ', 'ब', 'भ', 'म'):
+                        res.append('am')
+                    else:
+                        res.append('an')
+                elif matra == 'ी':
+                    if i <= 1 and (next_next is None or next_next in DEV_CONSONANTS):
+                        res.append('ee')
+                    else:
+                        res.append('i')
+                elif matra == 'ू':
+                    if i <= 1 and (next_next is None or next_next in DEV_CONSONANTS):
+                        res.append('oo')
+                    else:
+                        res.append('u')
                 else:
                     res.append(DEV_MATRAS[matra])
                 i += 1
-            elif i + 1 < n and chars[i+1] in DEV_CONSONANTS:
-                res.append(base + 'a')
             elif i == n - 1:
-                res.append(base)
+                if retains_final_a and i >= 2 and chars[i-1] == '्':
+                    res.append(base + 'a')
+                else:
+                    res.append(base)
+            elif next_c in DEV_CONSONANTS:
+                if is_conjunct_member:
+                    res.append(base + 'a')
+                elif i > 0 and (next_next == '्' or (next_next in DEV_MATRAS)):
+                    res.append(base)
+                else:
+                    res.append(base + 'a')
             else:
                 res.append(base + 'a')
         elif c in DEV_MATRAS:
