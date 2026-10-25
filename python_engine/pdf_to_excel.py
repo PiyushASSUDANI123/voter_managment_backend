@@ -160,12 +160,15 @@ def surya_recognize_card(card_img: Image.Image) -> Dict[str, Any]:
                 if c:
                     rel_name = c
 
-            hm = re.search(r'(?:मकान|गृह)\s*(?:संख्या|नंबर|नं|क्रं)?\s*[:ः\-\s]*(.+)', t)
+            hm = re.search(r'(?:मकान|गृह|मकारन|म\s*[\.०]?\s*सं|म\s*[\.०]?\s*क्र|H(?:ouse)?\.?\s*No\.?)\s*(?:संख्या|नंबर|नं|क्रं|सपखजर)?\s*[:ः\-\s]*(.+)', t)
             if hm and not house:
-                c = hm.group(1).strip()
-                c = re.sub(r'^(?:संख्या|नंबर|नं|क्रं)+[:ः\-\s]*', '', c).strip()
+                raw_c = hm.group(1).strip()
+                raw_c = re.split(r'\b(?:आयु|उम्र|आजच|आय|लिंग|सलग|जेंडर|Sex|फोटो|उपलब्ध|विलोपित|DELETED)\b', raw_c, flags=re.IGNORECASE)[0].strip()
+                c = re.sub(r'^(?:संख्या|नंबर|नं|क्रं)+[:ः\-\s]*', '', raw_c).strip()
                 if c and c not in ['-', '०', ':', '']:
-                    house = clean_house_no(c)
+                    cleaned_h = clean_house_no(c)
+                    if cleaned_h and cleaned_h != '-':
+                        house = cleaned_h
 
             am = re.search(r'आयु\s*[:ः\-\s]*(\d+)', t)
             if am and age is None:
@@ -232,9 +235,11 @@ def parse_full_card_tess(text: str) -> Dict[str, Any]:
             if c:
                 rel_name = c
 
-        hm = re.search(r'(?:मकान|गृह|मकारन)\s*(?:संख्या|नंबर|नं|क्रं|सपखजर)?\s*[:ः\-\s]*(.+)', l)
+        hm = re.search(r'(?:मकान|गृह|मकारन|म\s*[\.०]?\s*सं|म\s*[\.०]?\s*क्र|H(?:ouse)?\.?\s*No\.?)\s*(?:संख्या|नंबर|नं|क्रं|सपखजर)?\s*[:ः\-\s]*(.+)', l)
         if hm and not house:
-            c = clean_house_no(hm.group(1))
+            raw_c = hm.group(1).strip()
+            raw_c = re.split(r'\b(?:आयु|उम्र|आजच|आय|लिंग|सलग|जेंडर|Sex|फोटो|उपलब्ध|विलोपित|DELETED)\b', raw_c, flags=re.IGNORECASE)[0].strip()
+            c = clean_house_no(raw_c)
             if c and c not in ['-', '०', ':', '']:
                 house = c
 
@@ -822,47 +827,74 @@ def clean_relative_info(raw: str) -> Tuple[str, str]:
 
 def clean_house_no(raw: str) -> str:
     """
-    Strict House Number extraction and normalization.
-    Rule 1: Only numerical values (0-9, ०-९) with optional separators ('/', '-').
-    Rule 2: English characters are strictly stripped ('engklish ka toh kuch aa hi nhi skta').
-    Rule 3: Only fixed Devanagari sub-division suffixes allowed: क, ख, ग, घ, ङ, च, छ ('12क', '15/ख', 'क-12').
-    Rule 4: Junk words ('मका', 'लि', 'नि लि', '. आईसीआईसीआई', etc.) are stripped or return '-' if no digits exist.
+    Accurate House Number extraction and normalization for Indian Electoral Rolls.
+    1. Converts Devanagari numerals (०-९ -> 0-9).
+    2. Strips leading prefixes like 'मकान', 'संख्या', 'म.सं.', 'म.क्र.', 'गृह', 'H.No', colons, quotes.
+    3. Stops before adjacent keywords on same line ('आयु', 'उम्र', 'लिंग', 'Sex', 'Photo', etc.).
+    4. Accurately extracts house numbers with separators and sub-divisions:
+       - '12' -> '12'
+       - '12/1', '12-1', '14/A', '12A', '12-A', '12क', '12-क', '14/ख', 'क-12', 'A-12'
+       - Strips leading zeroes: '001' -> '1', '012' -> '12'
+    5. Disallows invalid values:
+       - '0', '00', '000', '-', '—', 'nil', 'na', 'n/a', 'लागू नहीं', 'उपलब्ध नहीं' -> returns '-'
+       - Arbitrary Hindi words/garbage text (like 'बाईपास', 'सपखजर', 'बैंक') are NOT treated as house numbers -> returns '-'
     """
     if not raw:
         return "-"
     s = normalize_numerals(str(raw).strip())
-    if any(w in s.lower() for w in ['लागू नहीं', 'उपलब्ध नहीं', 'शून्य', 'nil', 'na', 'none', 'n/a']):
+    
+    # Strip quotes, apostrophes, hashtags
+    s = re.sub(r'[\'"`‘’“”#]', '', s).strip()
+    
+    # Check invalid placeholders
+    s_lower = s.lower()
+    if any(w in s_lower for w in ['लागू नहीं', 'उपलब्ध नहीं', 'शून्य', 'nil', 'na', 'none', 'n/a', 'null', 'nan', 'unknown']):
         return "-"
 
+    # Stop before adjacent metadata keywords if present on same line
+    s = re.split(r'\b(?:आयु|उम्र|आजच|आय|लिंग|जेंडर|सलग|sex|फोटो|उपलब्ध|deleted|विलोपित)\b', s, flags=re.IGNORECASE)[0].strip()
+
     # Strip prefixes and labels
-    s = re.sub(r'^(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|पुरुष|पुरूष|स्त्री|महिला|नाम|पिता|पति|माता|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY)[:ः\.\-\s]*', '', s, flags=re.IGNORECASE)
-    s = re.sub(r'(?:मकान|संख्या|मकरन|सपखजर|गृह|आयु|उम्र|लिंग|ward|house|no)+', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'^(?:मकान|संख्या|मकरन|मकारन|सपखजर|गृह|वार्ड|ward|house|no|room|flat|ft|at|et|Fy|Ik|iad|है|हे|मिका|पु|Nha|AY|म\.?\s*सं\.?|म\.?\s*क्र\.?|H\.?\s*No\.?)[:ः\.\-\s]*', '', s, flags=re.IGNORECASE).strip()
+    s = re.sub(r'(?:मकान|संख्या|मकरन|मकारन|सपखजर|गृह|ward|house|no)+', '', s, flags=re.IGNORECASE).strip()
     
-    # Strictly strip all English letters
-    s = re.sub(r'[A-Za-z]+', '', s)
-    
-    # Strip punctuation except / and -
-    s = re.sub(r'[%*~_!?:;\'"‘’।॥«»°+={}\[\]()|<>^$&#@¥\.]+', ' ', s).strip()
+    # Strip unwanted symbols except valid house separators / and -
+    s = re.sub(r'[%*~_!?:;‘’।॥«»°+={}\[\]()|<>^$&#@¥]+', ' ', s).strip()
+    s = re.sub(r'\s+', ' ', s).strip()
 
-    # Prefix allowed pattern: e.g. "क-12" or "ख/4"
-    m_pre = re.search(r'([क-छ])\s*[\/\-]?\s*(\d+(?:[\/\-]\d+)*)', s)
+    # Prefix pattern: e.g. "क-12", "क/12", "A-12", "A/12"
+    m_pre = re.match(r'^([A-Za-zक-ह])\s*[\/\-\s]\s*(\d+(?:[\/\-]\d+)*)$', s)
     if m_pre:
-        return f"{m_pre.group(1)}-{m_pre.group(2)}"
+        prefix = m_pre.group(1).upper()
+        digits = m_pre.group(2).lstrip('0') or '0'
+        return f"{prefix}-{digits}"
 
-    # Core pattern: Digits with optional '/' or '-' and optional allowed Devanagari suffix [क-छ]
-    m_num = re.search(r'(\d+(?:[\/\-]\d+)*)(?:\s*([\/\-]?\s*[क-छ]))?', s)
-    if m_num:
-        digits_part = m_num.group(1)
-        suffix = (m_num.group(2) or '').replace(' ', '')
-        return f"{digits_part}{suffix}"
+    # Standard pattern: Digits with optional separators and sub-divisions (e.g. 12, 12/1, 12-1, 12A, 12-A, 12/A, 12क, 12-क, 12/ख)
+    m_core = re.search(r'(\d+(?:[\/\-]\d+)*)(?:\s*[\/\-]?\s*([A-Za-zक-ह]))?', s)
+    if m_core:
+        digits_part = m_core.group(1)
+        sub_part = (m_core.group(2) or '').strip()
+        
+        # Clean leading zeros on parts (e.g. 005 -> 5, 012/002 -> 12/2)
+        parts = digits_part.split('/')
+        if len(parts) > 1:
+            cleaned_digits = '/'.join(p.lstrip('0') or '0' for p in parts)
+        else:
+            hyphen_parts = digits_part.split('-')
+            if len(hyphen_parts) > 1:
+                cleaned_digits = '-'.join(p.lstrip('0') or '0' for p in hyphen_parts)
+            else:
+                cleaned_digits = digits_part.lstrip('0') or '0'
 
-    # Preserve meaningful Hindi area/colony landmarks if present (e.g. बाईपास, माधव पैलेस, शारदानगर, आईसीआईसीआई बैंक)
-    landmark = decode_sec_rajasthan(re.sub(r'[^\u0900-\u097F\s]', '', s)).strip()
-    banned_landmarks = {'मकान', 'संख्या', 'गृह', 'आयु', 'उम्र', 'लिंग', 'पुरुष', 'स्त्री', 'नाम', 'पिता', 'पति', 'माता', 'फोटो', 'उपलब्ध'}
-    if len(landmark) >= 3 and landmark not in banned_landmarks:
-        return landmark
+        # If it's just '0' without any sub-part, it's invalid
+        if cleaned_digits == '0' and not sub_part:
+            return "-"
 
-    # If no valid digits or landmarks are found, leave empty ('-')
+        if sub_part:
+            return f"{cleaned_digits}{sub_part}"
+        return cleaned_digits
+
+    # If no numbers were found, do NOT return random Hindi words/landmarks as house numbers!
     return "-"
 
 
