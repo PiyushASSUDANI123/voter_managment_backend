@@ -587,6 +587,21 @@ def decode_hashes_to_hindi(hash_list):
 # ==============================================================================
 # 5. PDF STREAM PARSER & VOTER BOX EXTRACTOR
 # ==============================================================================
+def decode_pdf_string_bytes(raw_s):
+    b_list, i = [], 0
+    while i < len(raw_s):
+        if raw_s[i] == '\\' and i + 1 < len(raw_s):
+            nxt = raw_s[i+1]
+            if nxt in ['(', ')', '\\']:
+                b_list.append(ord(nxt)); i += 2
+            elif nxt.isdigit():
+                b_list.append(int(raw_s[i+1:i+4], 8)); i += 4
+            else:
+                b_list.append(ord(nxt)); i += 2
+        else:
+            b_list.append(ord(raw_s[i])); i += 1
+    return b_list
+
 def parse_pdf_stream_tokens(stream_str):
     x, y, lm_x, lm_y = 0.0, 0.0, 0.0, 0.0
     curr_font = None
@@ -606,19 +621,16 @@ def parse_pdf_stream_tokens(stream_str):
             curr_font = line.split()[0]
         elif line.endswith(' Tj') and line.startswith('('):
             raw_s = line[1:-4]
-            b_list, i = [], 0
-            while i < len(raw_s):
-                if raw_s[i] == '\\' and i + 1 < len(raw_s):
-                    nxt = raw_s[i+1]
-                    if nxt in ['(', ')', '\\']:
-                        b_list.append(ord(nxt)); i += 2
-                    elif nxt.isdigit():
-                        b_list.append(int(raw_s[i+1:i+4], 8)); i += 4
-                    else:
-                        b_list.append(ord(nxt)); i += 2
-                else:
-                    b_list.append(ord(raw_s[i])); i += 1
+            b_list = decode_pdf_string_bytes(raw_s)
             items.append((round(x, 1), round(y, 1), curr_font, b_list))
+        elif line.endswith(' TJ'):
+            arr_str = line[:-3].strip()
+            if arr_str.startswith('[') and arr_str.endswith(']'):
+                pieces = re.findall(r'\((?:\\.|[^\\()])*\)', arr_str)
+                for p in pieces:
+                    b_list = decode_pdf_string_bytes(p[1:-1])
+                    if b_list:
+                        items.append((round(x, 1), round(y, 1), curr_font, b_list))
     return items
 
 def clean_house_val(val):
@@ -966,7 +978,7 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_d
                 else:
                     cb_x = 380.0
 
-                epic_no = ""
+                epic_tokens = []
                 house_no = ""
                 house_no_tokens = []
                 age_val = 30
@@ -980,10 +992,10 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_d
                         continue
                     txt = ''.join(chr(c) for c in b).strip()
 
-                    # EPIC No
-                    if sy - 2.0 <= y <= sy + 2.0 and cb_x + 40 <= x <= cb_x + 130 and f != '/9':
-                        if len(txt) >= 7:
-                            epic_no = txt
+                    # EPIC No candidate tokens on top card header
+                    if sy - 5.0 <= y <= sy + 5.0 and cb_x + 25.0 <= x <= cb_x + 165.0 and f != '/9':
+                        if txt and not (txt.isdigit() and len(txt) <= 4 and abs(x - sx) < 5.0):
+                            epic_tokens.append((x, txt))
 
                     # Voter Name line
                     elif sy - 16.5 <= y <= sy - 11.5:
@@ -1017,6 +1029,19 @@ def extract_single_pdf(pdf_path, default_ward=None, default_part=None, include_d
                                 age_val = 20 + p_age
                         elif f == '/9' and x >= cb_x + 70.0:
                             gen_hashes.extend([ch_hash.get(c, '') for c in b])
+
+                epic_no = ""
+                if epic_tokens:
+                    epic_tokens.sort(key=lambda it: it[0])
+                    joined_epic_line = "".join(t[1] for t in epic_tokens).strip()
+                    ep_m = re.search(r'(?:[A-Z]{2,4}\s*[\/\-]?\s*\d{6,8}|[A-Z]{2,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{3,7}|[A-Z0-9]{3}[0-9OIBLSZG]{7})', joined_epic_line, re.I)
+                    if ep_m:
+                        epic_no = ep_m.group(0).replace(" ", "").upper()
+                    else:
+                        for it in epic_tokens:
+                            if len(it[1]) >= 7 and any(c.isdigit() for c in it[1]) and any(c.isalpha() for c in it[1]):
+                                epic_no = it[1].replace(" ", "").upper()
+                                break
 
                 if house_no_tokens:
                     house_no_tokens.sort(key=lambda it: it[0])

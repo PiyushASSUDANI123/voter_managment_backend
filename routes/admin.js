@@ -874,9 +874,16 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
     headerRow.eachCell((cell, colNumber) => {
       const rawText = extractCellValue(cell);
       const h = rawText.toLowerCase().replace(/[\s\-_()\/.,]/g, '');
-      if (/^(क्रमांक|serial|srno|sno|serialno|अनुक्रमांक)$/i.test(h) || h.startsWith('serial') || h.startsWith('क्रमांक')) {
+      if (/^(क्रमांक|serial|srno|sno|serialno|अनुक्रमांक|slno)$/i.test(h) || h.startsWith('serial') || h.startsWith('क्रमांक') || h.startsWith('srno') || h.startsWith('slno')) {
         if (!colMap.serialNo) colMap.serialNo = colNumber;
-      } else if (/^(पहचान|पहचानपत्र|epic|epicno|voterid|पहचानपत्रepicno)$/i.test(h) || h.includes('epic') || h.startsWith('पहचान')) {
+      } else if (
+        /^(पहचान|पहचानपत्र|पहचानसंख्या|पहचानपत्रसंख्या|पहचानपत्रक्रमांक|मतदातापहचानपत्र|मतदातापहचानसंख्या|मतदातापहचानपत्रक्रमांक|epic|epicno|epicnumber|voterid|voteridno|voteridnumber|votercard|votercardno|कार्डसंख्या|पहचानक्र|पहचाननं|एपिक|एपिकनं|एपिकनंबर|वोटरआईडी|वोटरकार्ड)$/i.test(h) ||
+        h.includes('epic') ||
+        h.includes('पहचान') ||
+        h.includes('वोटर') ||
+        h.includes('voter') ||
+        (h.includes('card') && !h.includes('ration') && !h.includes('aadhar'))
+      ) {
         if (!colMap.epic) colMap.epic = colNumber;
       } else if (h.includes('नाम') || h.includes('name')) {
         if (h.includes('संबंधी') || h.includes('पिता') || h.includes('पति') || h.includes('relative') || h.includes('father') || h.includes('husband')) {
@@ -921,6 +928,35 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       }
     });
 
+    // 🧠 Data-driven auto-detection: If EPIC column was not matched via headers, inspect first 15 rows
+    if (!colMap.epic) {
+      const candidateCols = {};
+      const epicPattern = /^[A-Z]{2,4}[\s\/-]?\d{6,8}$|^[A-Z]{2,3}[\s\/-]\d{1,3}[\s\/-]\d{1,3}[\s\/-]\d{3,7}$/i;
+      const maxCheckRows = Math.min(worksheet.rowCount || 20, 15);
+      for (let r = 2; r <= maxCheckRows; r++) {
+        const checkRow = worksheet.getRow(r);
+        checkRow.eachCell((c, colNum) => {
+          if (colNum === colMap.serialNo) return;
+          const val = extractCellValue(c);
+          if (val && epicPattern.test(val)) {
+            candidateCols[colNum] = (candidateCols[colNum] || 0) + 1;
+          }
+        });
+      }
+      let bestCol = null;
+      let maxCount = 0;
+      for (const [col, count] of Object.entries(candidateCols)) {
+        if (count > maxCount) {
+          maxCount = count;
+          bestCol = parseInt(col, 10);
+        }
+      }
+      if (bestCol && maxCount >= 2) {
+        colMap.epic = bestCol;
+        console.log(`[admin.upload-voters] Auto-detected EPIC column ${bestCol} from data pattern (${maxCount} matches)`);
+      }
+    }
+
     const isMapped = Boolean(colMap.epic || colMap.nameHi || colMap.serialNo);
     const getVal = (row, colKey, fallbackIndex) => {
       const colIdx = isMapped && colMap[colKey] ? colMap[colKey] : fallbackIndex;
@@ -940,6 +976,8 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
       return s;
     };
 
+    const epicFallbackCol = colMap.serialNo === 1 ? 2 : 1;
+
     const parseRow = (row, rowNumber) => {
       const cellText = (colKey, fallbackIdx) => getVal(row, colKey, fallbackIdx);
       
@@ -949,7 +987,11 @@ router.post('/upload-voters', verifyToken, isAdmin, upload.single('file'), async
         serialNo = rowNumber - 1;
       }
 
-      let epic = cellText('epic', 1).toUpperCase().replace(/[\s\u200B\uFEFF]/g, '');
+      let epic = cellText('epic', epicFallbackCol).toUpperCase().replace(/[\s\u200B\uFEFF]/g, '');
+      // Safety: If epic was read as a simple 1-5 digit integer, it is a serial number, not a real EPIC
+      if (epic && /^\d{1,5}$/.test(epic)) {
+        epic = '';
+      }
       const nameEn = cellText('nameEn', 5);
       let nameHi = cellText('nameHi', 6);
       if (!nameHi && nameEn) nameHi = nameEn;

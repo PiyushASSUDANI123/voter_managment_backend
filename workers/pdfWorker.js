@@ -201,9 +201,16 @@ const ExcelJS = require('exceljs');
           const h = rawVal.toLowerCase().replace(/[\s\-_()\/.,]/g, '');
           if (!h) return;
 
-          if (/^(क्रमांक|serial|srno|sno|serialno|अनुक्रमांक|slno)$/i.test(h) || h.startsWith('serial') || h.startsWith('क्रमांक')) {
+          if (/^(क्रमांक|serial|srno|sno|serialno|अनुक्रमांक|slno)$/i.test(h) || h.startsWith('serial') || h.startsWith('क्रमांक') || h.startsWith('srno') || h.startsWith('slno')) {
             if (!colMap.serialNo) colMap.serialNo = colNumber;
-          } else if (/^(पहचान|पहचानपत्र|epic|epicno|voterid|पहचानपत्रepicno)$/i.test(h) || h.includes('epic') || h.startsWith('पहचान')) {
+          } else if (
+            /^(पहचान|पहचानपत्र|पहचानसंख्या|पहचानपत्रसंख्या|पहचानपत्रक्रमांक|मतदातापहचानपत्र|मतदातापहचानसंख्या|मतदातापहचानपत्रक्रमांक|epic|epicno|epicnumber|voterid|voteridno|voteridnumber|votercard|votercardno|कार्डसंख्या|पहचानक्र|पहचाननं|एपिक|एपिकनं|एपिकनंबर|वोटरआईडी|वोटरकार्ड)$/i.test(h) ||
+            h.includes('epic') ||
+            h.includes('पहचान') ||
+            h.includes('वोटर') ||
+            h.includes('voter') ||
+            (h.includes('card') && !h.includes('ration') && !h.includes('aadhar'))
+          ) {
             if (!colMap.epic) colMap.epic = colNumber;
           } else if (h.includes('नाम') || h.includes('name')) {
             if (h.includes('संबंधी') || h.includes('पिता') || h.includes('पति') || h.includes('relative') || h.includes('father') || h.includes('husband')) {
@@ -235,6 +242,35 @@ const ExcelJS = require('exceljs');
           }
         });
 
+        // 🧠 Data-driven auto-detection: If EPIC column was not matched via headers, inspect first 15 rows
+        if (!colMap.epic) {
+          const candidateCols = {};
+          const epicPattern = /^[A-Z]{2,4}[\s\/-]?\d{6,8}$|^[A-Z]{2,3}[\s\/-]\d{1,3}[\s\/-]\d{1,3}[\s\/-]\d{3,7}$/i;
+          const maxCheckRows = Math.min(worksheet.rowCount || 20, 15);
+          for (let r = 2; r <= maxCheckRows; r++) {
+            const checkRow = worksheet.getRow(r);
+            checkRow.eachCell((c, colNum) => {
+              if (colNum === colMap.serialNo) return;
+              const cellText = String(c.value || '').trim();
+              if (cellText && epicPattern.test(cellText)) {
+                candidateCols[colNum] = (candidateCols[colNum] || 0) + 1;
+              }
+            });
+          }
+          let bestCol = null;
+          let maxCount = 0;
+          for (const [col, count] of Object.entries(candidateCols)) {
+            if (count > maxCount) {
+              maxCount = count;
+              bestCol = parseInt(col, 10);
+            }
+          }
+          if (bestCol && maxCount >= 2) {
+            colMap.epic = bestCol;
+            console.log(`[pdfWorker] Auto-detected EPIC column ${bestCol} from data pattern (${maxCount} matches)`);
+          }
+        }
+
         const cellVal = (row, key, fallbackIdx) => {
           const idx = colMap[key] || fallbackIdx;
           if (!idx) return '';
@@ -246,12 +282,18 @@ const ExcelJS = require('exceljs');
           }
           return '';
         };
+
+        const epicFallbackCol = colMap.serialNo === 1 ? 2 : 1;
         
         worksheet.eachRow((row, rowNumber) => {
           if (rowNumber === 1) return; // header
           const rawSerial = cellVal(row, 'serialNo', 4);
           const serialVal = rawSerial ? parseInt(rawSerial, 10) : null;
-          const epic = cellVal(row, 'epic', 1);
+          let epic = cellVal(row, 'epic', epicFallbackCol);
+          // Safety: If epic was read as a simple 1-5 digit integer, it is a serial number, not a real EPIC
+          if (epic && /^\d{1,5}$/.test(epic.trim())) {
+            epic = '';
+          }
           const rawName = cellVal(row, 'nameHi', 6);
           const cleanName = rawName ? String(rawName).trim() : '';
 

@@ -266,7 +266,14 @@ def parse_full_card_tess(text: str) -> Dict[str, Any]:
     if name and rel_name:
         rel_name = strip_name_from_relative(name, rel_name)
 
+    # EPIC extraction from full OCR text block if present
+    epic = ""
+    ep_m = EPIC_PATTERN.search(text)
+    if ep_m:
+        epic = auto_correct_epic(ep_m.group(0))
+
     return {
+        'epic': epic,
         'name': name,
         'rel_name': rel_name,
         'rel_type': rel_type,
@@ -422,7 +429,10 @@ def fuzzy_lexicon_correct(name: str) -> str:
 # =============================================================================
 
 EPIC_PATTERN = re.compile(
-    r'(?:[A-Z0-9]{3}[0-9OIBLSZG]{7}|[A-Z]{2,4}[0-9]{6,8}|[A-Z]{2,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{3,7})',
+    r'(?:[A-Z]{2,4}\s*[\/\-]?\s*\d{6,8}'
+    r'|[A-Z]{2,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{1,3}\s*[\/\-]\s*\d{3,7}'
+    r'|[A-Z0-9]{3}[0-9OIBLSZG]{7}'
+    r'|[A-Z]{3}\s+[0-9]{7})',
     re.IGNORECASE
 )
 
@@ -440,13 +450,27 @@ def normalize_numerals(s: str) -> str:
 
 
 def auto_correct_epic(raw_epic: str) -> str:
-    """Voter ID auto-correction: O->0, I->1, B->8, etc."""
+    """Advanced Voter ID / EPIC auto-correction and normalization."""
     if not raw_epic:
         return ""
     cleaned = re.sub(r'[^A-Za-z0-9\/\-]', '', raw_epic.strip().upper())
-    if len(cleaned) == 11 and cleaned[0] in ['E', 'S', 'R']:
+    # Strip leading deletion markers if 11 chars
+    if len(cleaned) == 11 and cleaned[0] in ['E', 'S', 'R'] and cleaned[1:4].isalpha():
         cleaned = cleaned[1:]
-        
+
+    # State code slash format e.g. RJ/24/189/246543
+    if '/' in cleaned or '-' in cleaned:
+        parts = re.split(r'[\/\-]+', cleaned)
+        if len(parts) >= 3 and len(parts[0]) in (2, 3) and parts[0].isalpha():
+            letter_to_digit = {'O': '0', 'I': '1', 'L': '1', 'B': '8', 'S': '5', 'Z': '2', 'G': '6', 'D': '0', 'Q': '0'}
+            num_parts = []
+            for p in parts[1:]:
+                fixed_p = "".join(letter_to_digit.get(ch, ch) for ch in p)
+                num_parts.append(fixed_p)
+            return f"{parts[0]}/{'/'.join(num_parts)}"
+        return cleaned
+
+    # Standard 10-character alphanumeric: 3 letters + 7 digits
     if len(cleaned) == 10:
         prefix = cleaned[:3]
         suffix = cleaned[3:]
@@ -456,7 +480,16 @@ def auto_correct_epic(raw_epic: str) -> str:
         s_fixed = "".join(letter_to_digit.get(ch, ch) for ch in suffix)
         if p_fixed.isalpha() and s_fixed.isdigit():
             return f"{p_fixed}{s_fixed}"
-            
+
+    # 2 letters + 6-8 digits: e.g. RJ0123456
+    if 8 <= len(cleaned) <= 10 and cleaned[:2].isalpha():
+        prefix = cleaned[:2]
+        suffix = cleaned[2:]
+        letter_to_digit = {'O': '0', 'I': '1', 'L': '1', 'B': '8', 'S': '5', 'Z': '2', 'G': '6', 'D': '0', 'Q': '0'}
+        s_fixed = "".join(letter_to_digit.get(ch, ch) for ch in suffix)
+        if s_fixed.isdigit():
+            return f"{prefix}{s_fixed}"
+
     return cleaned
 
 
@@ -1236,15 +1269,30 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
 
     page_sections = extract_page_sections(page, p_idx)
 
-    # Multi-Anchor Card Discovery
+    # Multi-Anchor Card Discovery with Header Pairing
     words = page.get_text('words')
+    raw_epics_on_page = []
+    for w in words:
+        txt = w[4].strip()
+        ep_m = EPIC_PATTERN.search(txt)
+        if ep_m:
+            raw_epics_on_page.append((auto_correct_epic(ep_m.group(0)), w[0], w[1], w[2], w[3]))
+
+    col_targets = [46.7, 49.1, 53.2, 55.0, 220.2, 222.6, 226.8, 229.0, 393.6, 396.1, 400.2, 402.0]
     serial_anchors = []
     for w in words:
         txt = w[4].strip()
-        if txt.isdigit() and 130 < w[1] < page_height - 40:
+        if txt.isdigit() and 130 < w[1] < page_height - 35:
             val = int(txt)
-            if 1 <= val <= 2500 and any(abs(w[0] - col) < 20.0 for col in [49.1, 222.6, 396.1, 55.0, 229.0, 402.0]):
-                serial_anchors.append((val, w[0], w[1]))
+            if 1 <= val <= 2500 and val != 2026:
+                if any(abs(w[0] - col) < 7.0 for col in col_targets):
+                    paired_epic = None
+                    for ep_str, ex0, ey0, ex1, ey1 in raw_epics_on_page:
+                        if abs(w[1] - ey0) < 8.0 and 0 < (ex0 - w[0]) < 140.0:
+                            paired_epic = ep_str
+                            break
+                    if paired_epic or len(raw_epics_on_page) == 0:
+                        serial_anchors.append((val, w[0], w[1], paired_epic))
 
     card_boxes = []
     if len(serial_anchors) >= 3:
@@ -1252,13 +1300,15 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
         for s in serial_anchors:
             if s[0] not in seen_s:
                 seen_s[s[0]] = s
+            elif s[3] and not seen_s[s[0]][3]:
+                seen_s[s[0]] = s
         sorted_serials = sorted(seen_s.values(), key=lambda s: s[0])
-        for val, sx, sy in sorted_serials:
+        for val, sx, sy, paired_epic in sorted_serials:
             col_x0 = max(0.0, sx - 22.0)
             col_x1 = min(page_width, col_x0 + 175.0)
             card_y0 = max(0.0, sy - 10.0)
-            card_y1 = min(page_height, card_y0 + 89.0)
-            card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), val, None))
+            card_y1 = min(page_height, card_y0 + 72.35)
+            card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), val, None, paired_epic))
     else:
         # Fallback 2: Photo boxes and embedded images
         photo_rects = page.search_for('Photo is')
@@ -1296,11 +1346,16 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
                     col_x1 = min(page_width, p_r.x0 + 61.0)
                     card_y0 = max(0.0, p_r.y0 - 15.0)
                     card_y1 = min(page_height, card_y0 + 72.35)
-                card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), None, p_r))
+                card_boxes.append((fitz.Rect(col_x0, card_y0, col_x1, card_y1), None, p_r, None))
 
     page_cards = []
 
-    for card_rect, preset_serial, p_r in card_boxes:
+    for item in card_boxes:
+        card_rect = item[0]
+        preset_serial = item[1]
+        p_r = item[2]
+        paired_epic = item[3] if len(item) > 3 else None
+
         active_sec_hi, active_sec_en = "", ""
         for sec_y, s_hi, s_en in page_sections:
             if card_rect.y0 >= sec_y - 20:
@@ -1311,20 +1366,40 @@ def ocr_single_page(args_tuple: Tuple[str, int]) -> Tuple[int, List[Dict[str, An
         card_y0 = card_rect.y0
         card_y1 = card_rect.y1
 
-        # Digital words stream
+        # Digital words stream (RAW, UNTOUCHED)
         c_words = page.get_text('words', clip=card_rect)
-        words_text = [w[4] for w in c_words]
-        card_text_str = ' '.join(words_text)
-        
-        # Pillar 7: Convert card text if legacy font
-        if is_page_legacy:
-            card_text_str = auto_convert_text(card_text_str, page_font_names)
-            words_text = [auto_convert_text(w, page_font_names) for w in words_text]
+        raw_words_text = [w[4] for w in c_words]
+        raw_card_text_str = ' '.join(raw_words_text)
 
-        # 1. EPIC
-        epic_m = EPIC_PATTERN.search(card_text_str)
+        # 1. EPIC extraction strictly from RAW text stream FIRST before font conversion
+        epic_m = EPIC_PATTERN.search(raw_card_text_str)
         raw_epic = epic_m.group(0) if epic_m else ''
-        extracted_epic = auto_correct_epic(raw_epic)
+        extracted_epic = auto_correct_epic(raw_epic) if raw_epic else (paired_epic or '')
+
+        # Fallback 1b: Dedicated OCR on top header strip if digital EPIC is missing
+        if not extracted_epic:
+            try:
+                hdr_rect = fitz.Rect(col_x0 + 25.0, max(0.0, card_y0 - 2.0), min(page_width, col_x1), min(page_height, card_y0 + 22.0))
+                pix_hdr = page.get_pixmap(matrix=fitz.Matrix(3.0, 3.0), clip=hdr_rect)
+                img_hdr = Image.frombytes('RGB', [pix_hdr.width, pix_hdr.height], pix_hdr.samples)
+                tess_hdr = pytesseract.image_to_string(
+                    img_hdr, 
+                    lang='eng', 
+                    config='--psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/-'
+                ).strip()
+                ep_hdr_m = EPIC_PATTERN.search(tess_hdr)
+                if ep_hdr_m:
+                    extracted_epic = auto_correct_epic(ep_hdr_m.group(0))
+            except Exception:
+                pass
+
+        # 2. Only NOW convert card text for Hindi linguistic extraction if legacy font
+        if is_page_legacy:
+            card_text_str = auto_convert_text(raw_card_text_str, page_font_names)
+            words_text = [auto_convert_text(w, page_font_names) for w in raw_words_text]
+        else:
+            card_text_str = raw_card_text_str
+            words_text = raw_words_text
 
         # 2. Serial Number & Status
         card_serial = preset_serial
@@ -1764,6 +1839,7 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
     final_records = []
     voters_template_records = []
     seen_serials = set()
+    seen_epics = set()
     serial_counter = 1
 
     current_village_hi = cover_village_hi or "मुख्य गाँव"
@@ -1799,10 +1875,20 @@ def process_pdf_to_excel(pdf_path: str, excel_path: str, ward_no: str = "", boot
                 continue
 
             if not epic:
-                if (card.get("relativeNameHi") and len(card.get("relativeNameHi")) >= 2) or card.get("serialNo"):
-                    epic = f"VOTER_{card_serial}"
+                # Check if there is an unused authentic EPIC from raw page extraction
+                unused_page_epics = [ep for ep in page_epics if ep and ep not in seen_epics]
+                if unused_page_epics and not is_pure_supp_del_page:
+                    epic = unused_page_epics[0]
+                    seen_epics.add(epic)
+                elif (card.get("relativeNameHi") and len(card.get("relativeNameHi")) >= 2) or card.get("serialNo"):
+                    if is_pure_supp_del_page:
+                        epic = ""
+                    else:
+                        epic = f"VOTER_W{ward_no or '1'}_P{booth_no or '1'}_{card_serial}"
                 else:
                     continue
+            else:
+                seen_epics.add(epic)
 
             rel_name = card.get("relativeNameHi", "")
             rel_name = strip_name_from_relative(voter_name, rel_name)
